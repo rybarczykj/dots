@@ -1,6 +1,7 @@
 import { ReactElement } from 'react';
 import { SliderSection, DragDropFiles, Slider, Dropdown } from '../../../shared/components';
 import { SpecsState } from '../../../shared/types';
+import { DotsPreset } from '../presets';
 import heic2any from 'heic2any';
 import React from 'react';
 import '../../../shared/styles/menu.css';
@@ -48,6 +49,9 @@ interface DotsMenuProps {
     onFrameRateChange: (value: number) => void;
     showOriginalBackground: boolean;
     onShowOriginalBackgroundToggle: () => void;
+    presets: DotsPreset[];
+    activePreset: string;
+    onPresetChange: (preset: DotsPreset) => void;
 }
 
 export const DotsMenu = ({
@@ -82,6 +86,9 @@ export const DotsMenu = ({
     onFrameRateChange,
     showOriginalBackground,
     onShowOriginalBackgroundToggle,
+    presets,
+    activePreset,
+    onPresetChange,
 }: DotsMenuProps): ReactElement => {
     const imageUploadHandler = (imageFile: File) => {
         if (imageFile.type === 'image/heic') {
@@ -105,8 +112,17 @@ export const DotsMenu = ({
         }
     };
 
+    const dropHandler = (file: File) => {
+        const isVideo = file.type.startsWith('video/') || /\.(mp4|mov|webm|avi|mkv)$/i.test(file.name);
+        if (isVideo) {
+            onVideoUpload(file);
+        } else {
+            imageUploadHandler(file);
+        }
+    };
+
     return (
-        <DragDropFiles onDrop={imageUploadHandler}>
+        <DragDropFiles onDrop={dropHandler}>
             <div className="flex-row">
                 <div className="menu">
                     <div className="menu-entry">
@@ -249,6 +265,16 @@ export const DotsMenu = ({
                             )}
                         </div>
                     </form>
+
+                    <Dropdown
+                        label="preset"
+                        options={presets.map(p => ({ value: p.name, label: p.name }))}
+                        selectedOption={activePreset}
+                        onOptionChange={(name) => {
+                            const preset = presets.find(p => p.name === name);
+                            if (preset) onPresetChange(preset);
+                        }}
+                    />
 
                 </div>
             </div>

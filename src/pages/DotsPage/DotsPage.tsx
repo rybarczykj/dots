@@ -6,14 +6,52 @@ import { DotsMenu, DotShape } from './components/DotsMenu';
 import { DotsCanvas } from './components/DotsCanvas';
 import { processImageForDots, ProcessedPixelData, resizeImage } from './dots-utils';
 import { SpecsState } from '../../shared/types';
+import { PRESETS, DotsPreset } from './presets';
 
 const DotsPage: React.FC = () => {
-    // Core state
+    // Keyboard shortcuts
+    React.useEffect(() => {
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+            if (e.key === 'r' || e.key === 'R') {
+                const video = videoElementRef.current;
+                if (video) {
+                    video.currentTime = 0;
+                    video.play().catch(console.warn);
+                }
+            }
+            if (e.key === 'd' || e.key === 'D') {
+                const state = stateRef.current;
+                const dump: Omit<DotsPreset, 'name'> = {
+                    resolution: state.specs.resolution,
+                    zoom: state.specs.zoom,
+                    contrast: state.contrast,
+                    brightness: state.brightness,
+                    gamma: state.gamma,
+                    isColorInverted: state.isColorInverted,
+                    useColors: state.useColors,
+                    minDotSize: state.minDotSize,
+                    maxDotSize: state.maxDotSize,
+                    shape: state.shape,
+                    forceOGColors: state.forceOGColors,
+                    removeWhite: state.removeWhite,
+                    whitePoint: state.whitePoint,
+                    frameRate: state.frameRate,
+                    showOriginalBackground: state.showOriginalBackground,
+                };
+                console.log('Preset dump:\n' + JSON.stringify(dump, null, 4));
+            }
+        };
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, []);
+
+    // Core state — initialized from first preset
     const [specs, setSpecs] = React.useState<SpecsState>({
         fontSize: 30,
-        resolution: 100,
+        resolution: PRESETS[0].resolution,
         width: 700,
-        zoom: 1,
+        zoom: PRESETS[0].zoom,
         weight: 400,
         fontFamily: 'Ibm Plex Mono',
         kerning: 0,
@@ -24,37 +62,46 @@ const DotsPage: React.FC = () => {
     const [currentFile, setCurrentFile] = React.useState<File | null>(null);
     const [, setVideoFile] = React.useState<File | null>(null);
     const [videoElement, setVideoElement] = React.useState<HTMLVideoElement | null>(null);
+    const videoElementRef = React.useRef<HTMLVideoElement | null>(null);
+    React.useEffect(() => { videoElementRef.current = videoElement; }, [videoElement]);
     const [isStreamingVideo, setIsStreamingVideo] = React.useState(false);
 
     // Processed data
     const [pixelData, setPixelData] = React.useState<ProcessedPixelData | null>(null);
 
-    // Visual settings
-    const [isColorInverted, setIsColorInverted] = React.useState(false);
-    const [useColors, setUseColors] = React.useState(true); // Default to colors for dots
-    const [contrast, setContrast] = React.useState(1);
-    const [brightness, setBrightness] = React.useState(0);
-    const [gamma, setGamma] = React.useState(1);
+    // Visual settings — initialized from first preset
+    const [isColorInverted, setIsColorInverted] = React.useState(PRESETS[0].isColorInverted);
+    const [useColors, setUseColors] = React.useState(PRESETS[0].useColors);
+    const [contrast, setContrast] = React.useState(PRESETS[0].contrast);
+    const [brightness, setBrightness] = React.useState(PRESETS[0].brightness);
+    const [gamma, setGamma] = React.useState(PRESETS[0].gamma);
 
-    // Dot size settings (as fraction of max dot size, 0-1)
-    const [minDotSize, setMinDotSize] = React.useState(0.8);
-    const [maxDotSize, setMaxDotSize] = React.useState(0.8);
+    // Dot size settings
+    const [minDotSize, setMinDotSize] = React.useState(PRESETS[0].minDotSize);
+    const [maxDotSize, setMaxDotSize] = React.useState(PRESETS[0].maxDotSize);
 
     // Dot shape
-    const [shape, setShape] = React.useState<DotShape>('● circle');
+    const [shape, setShape] = React.useState<DotShape>(PRESETS[0].shape);
 
-    // Force original colors (use OG colors for rendering, adjusted brightness for sizing)
-    const [forceOGColors, setForceOGColors] = React.useState(false);
+    // Force original colors
+    const [forceOGColors, setForceOGColors] = React.useState(PRESETS[0].forceOGColors);
 
     // Remove white pixels above threshold
-    const [removeWhite, setRemoveWhite] = React.useState(false);
-    const [whitePoint, setWhitePoint] = React.useState(240);
+    const [removeWhite, setRemoveWhite] = React.useState(PRESETS[0].removeWhite);
+    const [whitePoint, setWhitePoint] = React.useState(PRESETS[0].whitePoint);
 
     // Video framerate
-    const [frameRate, setFrameRate] = React.useState(10);
+    const [frameRate, setFrameRate] = React.useState(PRESETS[0].frameRate);
 
     // Show original image/video as background
-    const [showOriginalBackground, setShowOriginalBackground] = React.useState(false);
+    const [showOriginalBackground, setShowOriginalBackground] = React.useState(PRESETS[0].showOriginalBackground);
+
+    // Active preset name
+    const [activePreset, setActivePreset] = React.useState(PRESETS[0].name);
+
+    // Ref for current state (used by 'd' key dump)
+    const stateRef = React.useRef({ specs, contrast, brightness, gamma, isColorInverted, useColors, minDotSize, maxDotSize, shape, forceOGColors, removeWhite, whitePoint, frameRate, showOriginalBackground });
+    stateRef.current = { specs, contrast, brightness, gamma, isColorInverted, useColors, minDotSize, maxDotSize, shape, forceOGColors, removeWhite, whitePoint, frameRate, showOriginalBackground };
 
     // Log current settings for debugging
     React.useEffect(() => {
@@ -100,6 +147,28 @@ const DotsPage: React.FC = () => {
             console.error('Error processing image:', error);
         }
     }, []);
+
+    // Apply a preset
+    const applyPreset = React.useCallback((preset: DotsPreset) => {
+        setActivePreset(preset.name);
+        setSpecs(prev => ({ ...prev, resolution: preset.resolution, zoom: preset.zoom }));
+        setContrast(preset.contrast);
+        setBrightness(preset.brightness);
+        setGamma(preset.gamma);
+        setIsColorInverted(preset.isColorInverted);
+        setUseColors(preset.useColors);
+        setMinDotSize(preset.minDotSize);
+        setMaxDotSize(preset.maxDotSize);
+        setShape(preset.shape);
+        setForceOGColors(preset.forceOGColors);
+        setRemoveWhite(preset.removeWhite);
+        setWhitePoint(preset.whitePoint);
+        setFrameRate(preset.frameRate);
+        setShowOriginalBackground(preset.showOriginalBackground);
+        if (currentFile) {
+            processImage(currentFile, preset.resolution, preset.contrast, preset.brightness, preset.gamma, preset.isColorInverted, preset.useColors);
+        }
+    }, [currentFile, processImage]);
 
     // Handle image upload
     const handleImageUpload = React.useCallback((file: File) => {
@@ -281,6 +350,9 @@ const DotsPage: React.FC = () => {
                 onFrameRateChange={setFrameRate}
                 showOriginalBackground={showOriginalBackground}
                 onShowOriginalBackgroundToggle={() => setShowOriginalBackground(v => !v)}
+                presets={PRESETS}
+                activePreset={activePreset}
+                onPresetChange={applyPreset}
             />
 
             <DotsCanvas
