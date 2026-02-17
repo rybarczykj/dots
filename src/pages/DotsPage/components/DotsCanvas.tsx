@@ -153,7 +153,7 @@ export const DotsCanvas: React.FC<DotsCanvasProps> = ({
         p5Ref.current = p5;
         const params = drawParamsRef.current;
         if (!params.pixelData) {
-            p5.createCanvas(300, 200).parent(canvasParentRef);
+            p5.createCanvas(0, 0).parent(canvasParentRef);
             p5.noLoop();
             return;
         }
