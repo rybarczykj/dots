@@ -291,10 +291,6 @@ const DotsPage: React.FC = () => {
                 if (context) {
                     context.drawImage(videoElement, 0, 0, width, height);
                     const imageData = context.getImageData(0, 0, width, height);
-                    const d = imageData.data;
-                    // Sample a pixel near center
-                    const mid = (Math.floor(height/2) * width + Math.floor(width/2)) * 4;
-                    console.log('Frame | center pixel:', d[mid], d[mid+1], d[mid+2], '| corner:', d[0], d[1], d[2]);
                     const processed = processImageForDots(imageData, contrast, brightness, gamma, isColorInverted, useColors);
                     setPixelData(processed);
                 }
@@ -395,6 +391,7 @@ const DotsPage: React.FC = () => {
                 onSpecsChange={setSpecs}
                 onVideoUpload={handleVideoUpload}
                 onImageUpload={handleImageUpload}
+                isVideo={isStreamingVideo}
                 isColorInverted={isColorInverted}
                 onColorInvertedToggle={handleColorInvertedToggle}
                 contrast={contrast}

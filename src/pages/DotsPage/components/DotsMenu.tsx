@@ -1,5 +1,5 @@
 import { ReactElement } from 'react';
-import { SliderSection, DragDropFiles, Slider, Dropdown } from '../../../shared/components';
+import { DragDropFiles, Slider, Dropdown } from '../../../shared/components';
 import { SpecsState } from '../../../shared/types';
 import { DotsPreset } from '../presets';
 import heic2any from 'heic2any';
@@ -22,6 +22,7 @@ interface DotsMenuProps {
     onSpecsChange: (specs: SpecsState) => void;
     onVideoUpload: (file: File) => void;
     onImageUpload: (file: File) => void;
+    isVideo: boolean;
     isColorInverted: boolean;
     onColorInvertedToggle: () => void;
     contrast: number;
@@ -59,6 +60,7 @@ export const DotsMenu = ({
     onSpecsChange,
     onImageUpload,
     onVideoUpload,
+    isVideo,
     onResolutionChange,
     isColorInverted,
     onColorInvertedToggle,
@@ -90,6 +92,8 @@ export const DotsMenu = ({
     activePreset,
     onPresetChange,
 }: DotsMenuProps): ReactElement => {
+    const [isColorGradingOpen, setIsColorGradingOpen] = React.useState(false);
+    const [isDotsOpen, setIsDotsOpen] = React.useState(false);
     const imageUploadHandler = (imageFile: File) => {
         if (imageFile.type === 'image/heic') {
             try {
@@ -125,14 +129,21 @@ export const DotsMenu = ({
         <DragDropFiles onDrop={dropHandler}>
             <div className="flex-row">
                 <div className="menu">
-                    <div className="menu-entry">
-                        <label htmlFor="file-upload" className="clickable-button">
-                            Upload an image
-                        </label>
+                    <div className="control-section">
+                        <label className="control-label">upload</label>
+                        <div className="control-small-buttons">
+                            <label htmlFor="file-upload" className="control-button">
+                                image
+                            </label>
+                            <label htmlFor="video-upload" className="control-button">
+                                or video
+                            </label>
+                        </div>
                         <input
                             id="file-upload"
                             type="file"
                             accept="image/*, .heic"
+                            className="file-upload-input"
                             onChange={(event) => {
                                 const myFile = event.target.files?.[0];
                                 if (!myFile) {
@@ -141,15 +152,11 @@ export const DotsMenu = ({
                                 imageUploadHandler(myFile);
                             }}
                         />
-                    </div>
-                    <div className="menu-entry">
-                        <label htmlFor="video-upload" className="clickable-button">
-                            Upload a video
-                        </label>
                         <input
                             id="video-upload"
                             type="file"
                             accept="video/*"
+                            className="file-upload-input"
                             onChange={(event) => {
                                 const videoFile = event.target.files?.[0];
                                 if (!videoFile) {
@@ -159,112 +166,174 @@ export const DotsMenu = ({
                             }}
                         />
                     </div>
-                    <SliderSection
-                        specs={specs}
-                        onSpecsChange={onSpecsChange}
-                        onResolutionChange={onResolutionChange}
-                        contrast={contrast}
-                        onContrastChange={onContrastChange}
-                        brightness={brightness}
-                        onBrightnessChange={onBrightnessChange}
-                        gamma={gamma}
-                        onGammaChange={onGammaChange}
-                        showFontWeight={false}
-                    />
+                    <div className="control-section">
+                        <Slider
+                            title="resolution"
+                            label={specs.resolution.toString()}
+                            value={specs.resolution}
+                            min={5}
+                            max={500}
+                            onChange={onResolutionChange}
+                        />
+                        <Slider
+                            title="zoom"
+                            label={specs.zoom.toString().slice(0, 4)}
+                            value={specs.zoom}
+                            min={0.1}
+                            max={10}
+                            step={0.1}
+                            onChange={(newZoom) => onSpecsChange({ ...specs, zoom: newZoom })}
+                        />
+                        <div className="checkboxes">
+                            <label>
+                                <input
+                                    type="checkbox"
+                                    checked={showOriginalBackground}
+                                    onChange={onShowOriginalBackgroundToggle}
+                                />
+                                {'show original?'}
+                            </label>
+                        </div>
+                    </div>
 
-                    <Slider
-                        title="min dot size"
-                        label="min"
-                        value={minDotSize}
-                        min={-5}
-                        max={25}
-                        step={0.1}
-                        onChange={onMinDotSizeChange}
-                    />
-                    <Slider
-                        title="max dot size"
-                        label="max"
-                        value={maxDotSize}
-                        min={0}
-                        max={25}
-                        step={0.1}
-                        onChange={onMaxDotSizeChange}
-                    />
-
-                    <Dropdown
-                        label="shape"
-                        options={DOT_SHAPES}
-                        selectedOption={shape}
-                        onOptionChange={onShapeChange}
-                    />
-
-                    <Slider
-                        title="framerate (fps)"
-                        label={frameRate.toString()}
-                        value={frameRate}
-                        min={1}
-                        max={60}
-                        step={1}
-                        onChange={onFrameRateChange}
-                    />
-
-                    <form>
-                        <div className="menu-entry">
-                            <div className="checkboxes">
-                                <label>
-                                    <input
-                                        type="checkbox"
-                                        checked={isColorInverted}
-                                        onChange={onColorInvertedToggle}
-                                    />
-                                    {'inverse?'}
-                                </label>
-                                <label>
-                                    <input
-                                        type="checkbox"
-                                        checked={useColors}
-                                        onChange={onUseColorsToggle}
-                                    />
-                                    {'use colors?'}
-                                </label>
-                                <label>
-                                    <input
-                                        type="checkbox"
-                                        checked={forceOGColors}
-                                        onChange={onForceOGColorsToggle}
-                                    />
-                                    {'force OG colors?'}
-                                </label>
-                                <label>
-                                    <input
-                                        type="checkbox"
-                                        checked={removeWhite}
-                                        onChange={onRemoveWhiteToggle}
-                                    />
-                                    {'remove white?'}
-                                </label>
-                                <label>
-                                    <input
-                                        type="checkbox"
-                                        checked={showOriginalBackground}
-                                        onChange={onShowOriginalBackgroundToggle}
-                                    />
-                                    {'show original?'}
-                                </label>
-                            </div>
-                            {removeWhite && (
+                    <div className="control-section">
+                        <div
+                            className="control-collapse-header"
+                            onClick={() => setIsColorGradingOpen(!isColorGradingOpen)}
+                        >
+                            <span className="control-label">
+                                <span>{isColorGradingOpen ? '↓' : '→'}</span>
+                                <span>color</span>
+                            </span>
+                        </div>
+                        {isColorGradingOpen && (
+                            <div className="control-collapse-content">
                                 <Slider
-                                    title="white point"
-                                    label={whitePoint.toString()}
-                                    value={whitePoint}
-                                    min={0}
+                                    title="contrast"
+                                    label={contrast.toString()}
+                                    value={contrast}
+                                    min={0.1}
+                                    max={50}
+                                    step={0.1}
+                                    onChange={onContrastChange}
+                                />
+                                <Slider
+                                    title="brightness"
+                                    label={brightness.toString()}
+                                    value={brightness}
+                                    min={-255}
                                     max={255}
                                     step={1}
-                                    onChange={onWhitePointChange}
+                                    onChange={onBrightnessChange}
                                 />
-                            )}
+                                <Slider
+                                    title="gamma"
+                                    label={gamma.toFixed(1)}
+                                    value={gamma}
+                                    min={0.4}
+                                    max={2.5}
+                                    step={0.1}
+                                    onChange={onGammaChange}
+                                />
+                            </div>
+                        )}
+                    </div>
+
+                    <div className="control-section">
+                        <div
+                            className="control-collapse-header"
+                            onClick={() => setIsDotsOpen(!isDotsOpen)}
+                        >
+                            <span className="control-label">
+                                <span>{isDotsOpen ? '↓' : '→'}</span>
+                                <span>dots</span>
+                            </span>
                         </div>
-                    </form>
+                        {isDotsOpen && (
+                            <div className="control-collapse-content">
+                                <Slider
+                                    title="min dot size"
+                                    label={minDotSize.toString()}
+                                    value={minDotSize}
+                                    min={-5}
+                                    max={25}
+                                    step={0.1}
+                                    onChange={onMinDotSizeChange}
+                                />
+                                <Slider
+                                    title="max dot size"
+                                    label={maxDotSize.toString()}
+                                    value={maxDotSize}
+                                    min={0}
+                                    max={25}
+                                    step={0.1}
+                                    onChange={onMaxDotSizeChange}
+                                />
+                                <Dropdown
+                                    label="shape"
+                                    options={DOT_SHAPES}
+                                    selectedOption={shape}
+                                    onOptionChange={onShapeChange}
+                                />
+                                <div className="checkboxes">
+                                    <label>
+                                        <input
+                                            type="checkbox"
+                                            checked={isColorInverted}
+                                            onChange={onColorInvertedToggle}
+                                        />
+                                        {'inverse?'}
+                                    </label>
+                                    <label>
+                                        <input
+                                            type="checkbox"
+                                            checked={useColors}
+                                            onChange={onUseColorsToggle}
+                                        />
+                                        {'use colors?'}
+                                    </label>
+                                    <label>
+                                        <input
+                                            type="checkbox"
+                                            checked={forceOGColors}
+                                            onChange={onForceOGColorsToggle}
+                                        />
+                                        {'force OG colors?'}
+                                    </label>
+                                    <label>
+                                        <input
+                                            type="checkbox"
+                                            checked={removeWhite}
+                                            onChange={onRemoveWhiteToggle}
+                                        />
+                                        {'remove white?'}
+                                    </label>
+                                </div>
+                                {removeWhite && (
+                                    <Slider
+                                        title="white point"
+                                        label={whitePoint.toString()}
+                                        value={whitePoint}
+                                        min={0}
+                                        max={255}
+                                        step={1}
+                                        onChange={onWhitePointChange}
+                                    />
+                                )}
+                                {isVideo && (
+                                    <Slider
+                                        title="framerate (fps)"
+                                        label={frameRate.toString()}
+                                        value={frameRate}
+                                        min={1}
+                                        max={60}
+                                        step={1}
+                                        onChange={onFrameRateChange}
+                                    />
+                                )}
+                            </div>
+                        )}
+                    </div>
 
                     <Dropdown
                         label="preset"

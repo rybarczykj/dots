@@ -13,10 +13,11 @@
   display: flex;
   flex-direction: row;
   flex-wrap: wrap;
-  font-size: 12px;
-  color: grey;
+  font-size: 10px;
+  color: rgb(128, 128, 128);
   margin-top: 20px;
   padding-left: 20px;
+  line-height: 1.2;
 }
 
 .menu {
@@ -27,47 +28,62 @@
 }
 
 .menu-entry {
-  padding-bottom: 20px;
-}
-
-.menu-entry-label {
-  padding-top: 10px;
   padding-bottom: 10px;
 }
 
-.clickable-button {
-  border: 1px solid #c8c8c8;
-  padding: 2px 10px;
+.menu-entry-label {
+  padding-top: 5px;
+  padding-bottom: 5px;
+}
+
+.control-button {
+  display: block;
+  border: 1px solid #ccc;
+  padding: 3px 10px;
   cursor: pointer;
-  border-radius: 2px;
+  font-size: 10px;
+  text-transform: lowercase;
+  background-color: white;
+  color: rgb(128, 128, 128);
+  transition: all 0.2s ease;
 }
 
-.clickable-button:hover {
+.control-button:hover {
   background-color: #d3d3d3;
+  color: white;
 }
 
-.hidden-button {
+.control-small-buttons {
+  width: 100%;
+  display: flex;
+  gap: 5px;
+}
+
+.file-upload-input {
   position: absolute;
   left: -99999rem;
 }
 
-input[type='button'],
-input[type='file'] {
-  position: absolute;
-  left: -99999rem;
+.checkboxes {
+  margin-top: 10px;
+  margin-bottom: 10px;
 }
+
 
 .checkboxes label {
   display: block;
-  padding-top: 5px;
+  padding-top: 4px;
+  font-size: 10px;
+  color: rgb(128, 128, 128);
+  text-transform: lowercase;
 }
 
 .checkboxes input {
-  width: 25px;
-  height: 15px;
+  width: 10px;
+  height: 10px;
   padding: 0;
-  margin: 0;
-  vertical-align: bottom;
+  margin: 0 5px 0 0;
+  vertical-align: middle;
   position: relative;
   top: -1px;
 }
@@ -84,54 +100,141 @@ input[type='file'] {
   transform: translate(-50%, -50%);
 }
 
-.slidecontainer {
-  margin-bottom: 20px;
+.slider-container {
+  font-size: 10px;
+  color: rgb(128, 128, 128);
+  margin-bottom: 10px;
+}
+
+.slider-container.disabled {
+  opacity: 0.3;
+}
+
+.slider-container label {
+  width: 100%;
+  margin-bottom: 5px;
+  color: rgb(128, 128, 128);
+  text-transform: lowercase;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
 }
 
 .slider-track {
   font-size: 15px;
-  color: #00f;
-  -webkit-user-select: none;
+  color: rgb(33, 44, 255);
   user-select: none;
+  display: flex;
+  align-items: center;
+  position: relative;
 }
 
 .slider-input {
   -webkit-appearance: none;
-  width: 80px;
-  background: transparent;
+  width: 145px;
   outline: none;
   opacity: 0;
   transition: opacity 0.2s;
   position: absolute;
-  left: 25px;
-  margin-top: -2px;
+  left: 0;
+  top: 0;
+  height: 100%;
+  margin: 0;
+  z-index: 1;
 }
 
 .slider-input::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  appearance: none;
   width: 20px;
   height: 20px;
   border-radius: 100%;
-  background-color: #00f;
+  background-color: rgb(33, 44, 255);
   cursor: grab;
   margin-bottom: 10px;
 }
 
-.slider-asterix {
-  -webkit-user-select: none;
-  user-select: none;
-  height: 10px;
-  width: 10px;
-}
-
-.slider-asterix:hover {
-  color: #6495ed;
+.slider-input::-webkit-slider-thumb:active {
+  cursor: grabbing;
 }
 
 .slider-dashes {
-  -webkit-user-select: none;
+  color: rgb(33, 44, 255);
+}
+
+.slider-arrow {
+  font-size: 12px;
+  margin-bottom: -2px;
+}
+
+.slider-asterix {
+  font-weight: 200;
+  font-family: Helvetica, sans-serif;
+  margin-bottom: -6px;
+  font-size: 17px;
+  margin-left: 1px;
+  margin-right: 1px;
+}
+
+.slider-value {
+}
+
+/* Controls */
+.control-group {
+  margin-bottom: 10px;
+}
+
+.control-label {
+  display: block;
+  margin-bottom: 5px;
+  font-size: 10px;
+  color: rgb(128, 128, 128);
+  text-transform: lowercase;
+}
+
+.control-select {
+  width: 100%;
+  margin-top: 5px;
+  padding: 2px;
+  font-size: 10px;
+  color: rgb(128, 128, 128);
+  border: 1px solid #ccc;
+  background-color: white;
+  text-transform: lowercase;
+}
+
+/* Collapsible sections */
+.control-section {
+  margin-bottom: 25px;
+}
+
+.control-collapse-header {
+  cursor: pointer;
+  padding: 4px 0;
   user-select: none;
+  border-bottom: 1px dashed #ccc;
+  margin-bottom: 0;
+}
+
+.control-collapse-header:hover {
+  opacity: 0.8;
+}
+
+.control-collapse-header .control-label {
+  display: flex;
+  flex-direction: row;
+  gap: 5px;
+  font-size: 10px;
+  color: #666;
+  margin: 0;
+}
+
+.control-collapse-content {
+  padding-top: 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0px;
+  width: 100%;
 }
 
 

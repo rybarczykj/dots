@@ -9,6 +9,7 @@ interface SliderProps {
     max: number;
     step?: number;
     disabled?: boolean;
+    compact?: boolean;
 }
 
 export const Slider: React.FC<SliderProps> = ({
@@ -20,20 +21,22 @@ export const Slider: React.FC<SliderProps> = ({
     max,
     step,
     disabled,
+    compact,
 }) => {
-    const sliderLength = 10;
-    if (value > max || value < min) {
-        throw new Error(`value ${value} is outside of range ${min} to ${max}`);
-    }
+    const sliderLength = compact ? 11 : 17;
+    const clampedValue = Math.max(min, Math.min(max, value));
 
-    const normalizedValue = Math.floor(((value - min) / (max - min)) * sliderLength);
+    const normalizedValue = Math.max(0, Math.min(sliderLength, Math.floor(((clampedValue - min) / (max - min)) * sliderLength)));
 
     const leftDashes = '-'.repeat(normalizedValue);
     const rightDashes = '-'.repeat(sliderLength - normalizedValue);
 
     return (
-        <div className="slidecontainer">
-            <p>{title}</p>
+        <div className={`slider-container ${disabled ? 'disabled' : ''} ${compact ? 'compact' : ''}`}>
+            <label>
+                {title}{' '}
+                <span className="slider-value">{label}</span>
+            </label>
             <div className="slider-track">
                 <input
                     type="range"
@@ -45,11 +48,11 @@ export const Slider: React.FC<SliderProps> = ({
                     disabled={disabled}
                     className="slider-input"
                 />
-                {`<`}
+                <span className="slider-arrow">←</span>
                 <span className="slider-dashes">{leftDashes}</span>
                 <span className="slider-asterix">*</span>
                 <span className="slider-dashes">{rightDashes}</span>
-                {`>`}
+                <span className="slider-arrow">→</span>
             </div>
         </div>
     );
