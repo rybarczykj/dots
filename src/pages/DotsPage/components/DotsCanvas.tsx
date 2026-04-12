@@ -11,6 +11,7 @@ interface DotsCanvasProps {
     pixelData: ProcessedPixelData | null;
     zoom: number;
     resolution: number;
+    sourceAspectRatio: number | null;
     minDotSize: number;
     maxDotSize: number;
     shape: DotShape;
@@ -71,6 +72,7 @@ export const DotsCanvas: React.FC<DotsCanvasProps> = ({
     pixelData,
     zoom,
     resolution,
+    sourceAspectRatio,
     minDotSize,
     maxDotSize,
     shape,
@@ -86,8 +88,13 @@ export const DotsCanvas: React.FC<DotsCanvasProps> = ({
     const backgroundImageRef = React.useRef<HTMLImageElement | null>(null);
     const lastSourceUrlRef = React.useRef<string | null>(null);
 
-    // Calculate dot spacing to keep visual size constant regardless of resolution
-    const dotSpacing = (1000 / resolution) * zoom;
+    // Lock canvas to a fixed size (1000*zoom wide, height from stable aspect ratio).
+    // dotSpacing is derived from pixelData.width so canvas width = 1000*zoom exactly.
+    // Canvas height uses the source aspect ratio (set once per source) to avoid rounding
+    // jitter from integer pixelData dimensions at different resolutions.
+    const targetWidth = 1000 * zoom;
+    const targetHeight = sourceAspectRatio ? targetWidth / sourceAspectRatio : targetWidth;
+    const dotSpacing = pixelData ? targetWidth / pixelData.width : (1000 / resolution) * zoom;
 
     // Refs so draw() always sees latest props (react-p5 can invoke a stale draw on redraw())
     const drawParamsRef = React.useRef({
@@ -99,6 +106,8 @@ export const DotsCanvas: React.FC<DotsCanvasProps> = ({
         minDotSize,
         maxDotSize,
         dotSpacing,
+        targetWidth,
+        targetHeight,
         showOriginalBackground,
         videoElement,
     });
@@ -111,6 +120,8 @@ export const DotsCanvas: React.FC<DotsCanvasProps> = ({
         minDotSize,
         maxDotSize,
         dotSpacing,
+        targetWidth,
+        targetHeight,
         showOriginalBackground,
         videoElement,
     };
@@ -158,9 +169,7 @@ export const DotsCanvas: React.FC<DotsCanvasProps> = ({
             return;
         }
 
-        const canvasWidth = params.pixelData.width * params.dotSpacing;
-        const canvasHeight = params.pixelData.height * params.dotSpacing;
-        p5.createCanvas(canvasWidth, canvasHeight).parent(canvasParentRef);
+        p5.createCanvas(params.targetWidth, params.targetHeight).parent(canvasParentRef);
         p5.noLoop();
         p5.noStroke();
     };
@@ -175,18 +184,16 @@ export const DotsCanvas: React.FC<DotsCanvasProps> = ({
         }
 
         const maxPossibleSize = params.dotSpacing * 0.95;
-        const expectedWidth = params.pixelData.width * params.dotSpacing;
-        const expectedHeight = params.pixelData.height * params.dotSpacing;
-        if (p5.width !== expectedWidth || p5.height !== expectedHeight) {
-            p5.resizeCanvas(expectedWidth, expectedHeight);
+        if (p5.width !== params.targetWidth || p5.height !== params.targetHeight) {
+            p5.resizeCanvas(params.targetWidth, params.targetHeight);
         }
 
         if (params.showOriginalBackground) {
             const ctx = p5.drawingContext as CanvasRenderingContext2D;
             if (params.videoElement && params.videoElement.readyState >= 2) {
-                ctx.drawImage(params.videoElement, 0, 0, expectedWidth, expectedHeight);
+                ctx.drawImage(params.videoElement, 0, 0, params.targetWidth, params.targetHeight);
             } else if (backgroundImageRef.current) {
-                ctx.drawImage(backgroundImageRef.current, 0, 0, expectedWidth, expectedHeight);
+                ctx.drawImage(backgroundImageRef.current, 0, 0, params.targetWidth, params.targetHeight);
             }
         }
 

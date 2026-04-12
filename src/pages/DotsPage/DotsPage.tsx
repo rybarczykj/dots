@@ -9,6 +9,9 @@ import { SpecsState } from '../../shared/types';
 import { PRESETS, DotsPreset } from './presets';
 
 const DotsPage: React.FC = () => {
+    // Webcam stream ref for cleanup
+    const webcamStreamRef = React.useRef<MediaStream | null>(null);
+
     // Keyboard shortcuts
     React.useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
@@ -19,6 +22,9 @@ const DotsPage: React.FC = () => {
                     video.currentTime = 0;
                     video.play().catch(console.warn);
                 }
+            }
+            if (e.key === 'w' || e.key === 'W') {
+                toggleWebcam();
             }
             if (e.key === 'd' || e.key === 'D') {
                 const state = stateRef.current;
@@ -68,6 +74,9 @@ const DotsPage: React.FC = () => {
 
     // Processed data
     const [pixelData, setPixelData] = React.useState<ProcessedPixelData | null>(null);
+
+    // Stable source aspect ratio (width/height) — set once per source, not affected by resolution
+    const [sourceAspectRatio, setSourceAspectRatio] = React.useState<number | null>(null);
 
     // Visual settings — initialized from first preset
     const [isColorInverted, setIsColorInverted] = React.useState(PRESETS[0].isColorInverted);
@@ -175,6 +184,13 @@ const DotsPage: React.FC = () => {
         setCurrentFile(file);
         setVideoFile(null);
         setIsStreamingVideo(false);
+        // Read the original image to capture its true aspect ratio (before any resizing)
+        const img = new Image();
+        img.onload = () => {
+            setSourceAspectRatio(img.width / img.height);
+            URL.revokeObjectURL(img.src);
+        };
+        img.src = URL.createObjectURL(file);
         processImage(file, specs.resolution, contrast, brightness, gamma, isColorInverted, useColors);
     }, [specs.resolution, contrast, brightness, gamma, isColorInverted, useColors, processImage]);
 
@@ -193,9 +209,50 @@ const DotsPage: React.FC = () => {
         video.src = URL.createObjectURL(file);
 
         video.addEventListener('loadedmetadata', () => {
+            setSourceAspectRatio(video.videoWidth / video.videoHeight);
             setVideoElement(video);
             video.play().catch(console.warn);
         });
+    }, []);
+
+    // Webcam video ref (rendered in JSX)
+    const webcamVideoRef = React.useRef<HTMLVideoElement>(null);
+
+    // Toggle webcam
+    const toggleWebcam = React.useCallback(async () => {
+        // If webcam is active, stop it
+        if (webcamStreamRef.current) {
+            webcamStreamRef.current.getTracks().forEach(track => track.stop());
+            webcamStreamRef.current = null;
+            if (webcamVideoRef.current) {
+                webcamVideoRef.current.pause();
+                webcamVideoRef.current.srcObject = null;
+            }
+            setVideoElement(null);
+            setIsStreamingVideo(false);
+            setPixelData(null);
+            return;
+        }
+
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+            webcamStreamRef.current = stream;
+
+            setCurrentFile(null);
+            setVideoFile(null);
+            setIsStreamingVideo(true);
+            setPixelData(null);
+
+            const video = webcamVideoRef.current!;
+            video.srcObject = stream;
+
+            video.play().then(() => {
+                setSourceAspectRatio(video.videoWidth / video.videoHeight);
+                setVideoElement(video);
+            }).catch(console.warn);
+        } catch (err) {
+            console.error('Webcam access denied:', err);
+        }
     }, []);
 
     // Video frame processing
@@ -234,6 +291,10 @@ const DotsPage: React.FC = () => {
                 if (context) {
                     context.drawImage(videoElement, 0, 0, width, height);
                     const imageData = context.getImageData(0, 0, width, height);
+                    const d = imageData.data;
+                    // Sample a pixel near center
+                    const mid = (Math.floor(height/2) * width + Math.floor(width/2)) * 4;
+                    console.log('Frame | center pixel:', d[mid], d[mid+1], d[mid+2], '| corner:', d[0], d[1], d[2]);
                     const processed = processImageForDots(imageData, contrast, brightness, gamma, isColorInverted, useColors);
                     setPixelData(processed);
                 }
@@ -258,7 +319,11 @@ const DotsPage: React.FC = () => {
         return () => {
             if (videoElement) {
                 videoElement.pause();
-                URL.revokeObjectURL(videoElement.src);
+                if (videoElement.src) URL.revokeObjectURL(videoElement.src);
+            }
+            if (webcamStreamRef.current) {
+                webcamStreamRef.current.getTracks().forEach(track => track.stop());
+                webcamStreamRef.current = null;
             }
         };
     }, [videoElement]);
@@ -318,6 +383,13 @@ const DotsPage: React.FC = () => {
 
     return (
         <div className="flex-container">
+            {/* Hidden video element for webcam capture */}
+            <video
+                ref={webcamVideoRef}
+                muted
+                playsInline
+                style={{ position: 'fixed', left: 0, top: 0, width: 640, height: 480, opacity: 0.001, pointerEvents: 'none', zIndex: -1 }}
+            />
             <DotsMenu
                 specs={specs}
                 onSpecsChange={setSpecs}
@@ -359,6 +431,7 @@ const DotsPage: React.FC = () => {
                 pixelData={pixelData}
                 zoom={specs.zoom}
                 resolution={specs.resolution}
+                sourceAspectRatio={sourceAspectRatio}
                 minDotSize={minDotSize}
                 maxDotSize={maxDotSize}
                 shape={shape}
