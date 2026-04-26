@@ -19,6 +19,9 @@ interface DotsCanvasProps {
     removeWhite: boolean;
     whitePoint: number;
     showOriginalBackground: boolean;
+    applyGradingToOriginal: boolean;
+    showDots: boolean;
+    customBgElement: HTMLVideoElement | HTMLImageElement | null;
     sourceFile: File | null;
     videoElement: HTMLVideoElement | null;
     className?: string;
@@ -80,6 +83,9 @@ export const DotsCanvas: React.FC<DotsCanvasProps> = ({
     removeWhite,
     whitePoint,
     showOriginalBackground,
+    applyGradingToOriginal,
+    showDots,
+    customBgElement,
     sourceFile,
     videoElement,
     className,
@@ -109,6 +115,9 @@ export const DotsCanvas: React.FC<DotsCanvasProps> = ({
         targetWidth,
         targetHeight,
         showOriginalBackground,
+        applyGradingToOriginal,
+        showDots,
+        customBgElement,
         videoElement,
     });
     drawParamsRef.current = {
@@ -123,6 +132,9 @@ export const DotsCanvas: React.FC<DotsCanvasProps> = ({
         targetWidth,
         targetHeight,
         showOriginalBackground,
+        applyGradingToOriginal,
+        showDots,
+        customBgElement,
         videoElement,
     };
 
@@ -158,7 +170,19 @@ export const DotsCanvas: React.FC<DotsCanvasProps> = ({
         if (p5Ref.current && pixelData) {
             p5Ref.current.redraw();
         }
-    }, [pixelData, zoom, resolution, dotSpacing, minDotSize, maxDotSize, shape, forceOGColors, removeWhite, whitePoint, showOriginalBackground]);
+    }, [pixelData, zoom, resolution, dotSpacing, minDotSize, maxDotSize, shape, forceOGColors, removeWhite, whitePoint, showOriginalBackground, applyGradingToOriginal, showDots, customBgElement]);
+
+    // Continuous redraw loop for custom video backgrounds
+    React.useEffect(() => {
+        if (!customBgElement || !(customBgElement instanceof HTMLVideoElement)) return;
+        let rafId: number;
+        const loop = () => {
+            if (p5Ref.current) p5Ref.current.redraw();
+            rafId = requestAnimationFrame(loop);
+        };
+        rafId = requestAnimationFrame(loop);
+        return () => cancelAnimationFrame(rafId);
+    }, [customBgElement]);
 
     const setup = (p5: P5Instance, canvasParentRef: Element) => {
         p5Ref.current = p5;
@@ -188,14 +212,46 @@ export const DotsCanvas: React.FC<DotsCanvasProps> = ({
             p5.resizeCanvas(params.targetWidth, params.targetHeight);
         }
 
-        if (params.showOriginalBackground) {
+        // Draw custom background (no FX)
+        if (params.customBgElement) {
             const ctx = p5.drawingContext as CanvasRenderingContext2D;
-            if (params.videoElement && params.videoElement.readyState >= 2) {
+            if (params.customBgElement instanceof HTMLVideoElement && params.customBgElement.readyState >= 2) {
+                ctx.drawImage(params.customBgElement, 0, 0, params.targetWidth, params.targetHeight);
+            } else if (params.customBgElement instanceof HTMLImageElement) {
+                ctx.drawImage(params.customBgElement, 0, 0, params.targetWidth, params.targetHeight);
+            }
+        }
+
+        if (params.showOriginalBackground && !params.customBgElement) {
+            const ctx = p5.drawingContext as CanvasRenderingContext2D;
+            if (params.applyGradingToOriginal && params.pixelData) {
+                // Draw processed pixelData as background (color grading applied)
+                const tmpCanvas = document.createElement('canvas');
+                tmpCanvas.width = params.pixelData.width;
+                tmpCanvas.height = params.pixelData.height;
+                const tmpCtx = tmpCanvas.getContext('2d')!;
+                const imgData = tmpCtx.createImageData(params.pixelData.width, params.pixelData.height);
+                for (let y = 0; y < params.pixelData.height; y++) {
+                    for (let x = 0; x < params.pixelData.width; x++) {
+                        const px = params.pixelData.pixels[y][x];
+                        const i = (y * params.pixelData.width + x) * 4;
+                        imgData.data[i] = px.r;
+                        imgData.data[i + 1] = px.g;
+                        imgData.data[i + 2] = px.b;
+                        imgData.data[i + 3] = 255;
+                    }
+                }
+                tmpCtx.putImageData(imgData, 0, 0);
+                ctx.imageSmoothingEnabled = true;
+                ctx.drawImage(tmpCanvas, 0, 0, params.targetWidth, params.targetHeight);
+            } else if (params.videoElement && params.videoElement.readyState >= 2) {
                 ctx.drawImage(params.videoElement, 0, 0, params.targetWidth, params.targetHeight);
             } else if (backgroundImageRef.current) {
                 ctx.drawImage(backgroundImageRef.current, 0, 0, params.targetWidth, params.targetHeight);
             }
         }
+
+        if (!params.showDots) return;
 
         for (let y = 0; y < params.pixelData.height; y++) {
             for (let x = 0; x < params.pixelData.width; x++) {
@@ -211,8 +267,8 @@ export const DotsCanvas: React.FC<DotsCanvasProps> = ({
                 }
 
                 if (params.removeWhite) {
-                    const avgColor = (colorPixel.r + colorPixel.g + colorPixel.b) / 3;
-                    if (avgColor >= params.whitePoint) {
+                    const avgBrightness = (pixel.r + pixel.g + pixel.b) / 3;
+                    if (avgBrightness >= params.whitePoint) {
                         continue;
                     }
                 }

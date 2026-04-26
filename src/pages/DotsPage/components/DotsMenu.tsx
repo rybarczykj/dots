@@ -1,6 +1,7 @@
 import { ReactElement } from 'react';
 import { DragDropFiles, Slider, Dropdown } from '../../../shared/components';
 import { SpecsState } from '../../../shared/types';
+import { ProcessedPixelData } from '../dots-utils';
 import { DotsPreset } from '../presets';
 import heic2any from 'heic2any';
 import React from 'react';
@@ -23,6 +24,7 @@ interface DotsMenuProps {
     onVideoUpload: (file: File) => void;
     onImageUpload: (file: File) => void;
     isVideo: boolean;
+    pixelData: ProcessedPixelData | null;
     isColorInverted: boolean;
     onColorInvertedToggle: () => void;
     contrast: number;
@@ -50,6 +52,13 @@ interface DotsMenuProps {
     onFrameRateChange: (value: number) => void;
     showOriginalBackground: boolean;
     onShowOriginalBackgroundToggle: () => void;
+    showDots: boolean;
+    onShowDotsToggle: () => void;
+    applyGradingToOriginal: boolean;
+    onApplyGradingToOriginalToggle: () => void;
+    hasCustomBg: boolean;
+    onCustomBgUpload: (file: File) => void;
+    onCustomBgClear: () => void;
     presets: DotsPreset[];
     activePreset: string;
     onPresetChange: (preset: DotsPreset) => void;
@@ -61,6 +70,7 @@ export const DotsMenu = ({
     onImageUpload,
     onVideoUpload,
     isVideo,
+    pixelData,
     onResolutionChange,
     isColorInverted,
     onColorInvertedToggle,
@@ -88,12 +98,43 @@ export const DotsMenu = ({
     onFrameRateChange,
     showOriginalBackground,
     onShowOriginalBackgroundToggle,
+    showDots,
+    onShowDotsToggle,
+    applyGradingToOriginal,
+    onApplyGradingToOriginalToggle,
+    hasCustomBg,
+    onCustomBgUpload,
+    onCustomBgClear,
     presets,
     activePreset,
     onPresetChange,
 }: DotsMenuProps): ReactElement => {
     const [isColorGradingOpen, setIsColorGradingOpen] = React.useState(false);
     const [isDotsOpen, setIsDotsOpen] = React.useState(false);
+    const [isBackgroundOpen, setIsBackgroundOpen] = React.useState(false);
+    const previewCanvasRef = React.useRef<HTMLCanvasElement>(null);
+
+    // Draw color-graded preview directly from processed pixelData
+    React.useEffect(() => {
+        const canvas = previewCanvasRef.current;
+        if (!canvas || !pixelData || !isColorGradingOpen) return;
+        canvas.width = pixelData.width;
+        canvas.height = pixelData.height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+        const imageData = ctx.createImageData(pixelData.width, pixelData.height);
+        for (let y = 0; y < pixelData.height; y++) {
+            for (let x = 0; x < pixelData.width; x++) {
+                const px = pixelData.pixels[y][x];
+                const i = (y * pixelData.width + x) * 4;
+                imageData.data[i] = px.r;
+                imageData.data[i + 1] = px.g;
+                imageData.data[i + 2] = px.b;
+                imageData.data[i + 3] = 255;
+            }
+        }
+        ctx.putImageData(imageData, 0, 0);
+    }, [pixelData, isColorGradingOpen]);
     const imageUploadHandler = (imageFile: File) => {
         if (imageFile.type === 'image/heic') {
             try {
@@ -172,7 +213,7 @@ export const DotsMenu = ({
                             label={specs.resolution.toString()}
                             value={specs.resolution}
                             min={5}
-                            max={500}
+                            max={1000}
                             onChange={onResolutionChange}
                         />
                         <Slider
@@ -184,16 +225,6 @@ export const DotsMenu = ({
                             step={0.1}
                             onChange={(newZoom) => onSpecsChange({ ...specs, zoom: newZoom })}
                         />
-                        <div className="checkboxes">
-                            <label>
-                                <input
-                                    type="checkbox"
-                                    checked={showOriginalBackground}
-                                    onChange={onShowOriginalBackgroundToggle}
-                                />
-                                {'show original?'}
-                            </label>
-                        </div>
                     </div>
 
                     <div className="control-section">
@@ -208,6 +239,12 @@ export const DotsMenu = ({
                         </div>
                         {isColorGradingOpen && (
                             <div className="control-collapse-content">
+                                {pixelData && (
+                                    <canvas
+                                        ref={previewCanvasRef}
+                                        className="color-preview"
+                                    />
+                                )}
                                 <Slider
                                     title="contrast"
                                     label={contrast.toString()}
@@ -235,6 +272,24 @@ export const DotsMenu = ({
                                     step={0.1}
                                     onChange={onGammaChange}
                                 />
+                                <div className="checkboxes">
+                                    <label>
+                                        <input
+                                            type="checkbox"
+                                            checked={isColorInverted}
+                                            onChange={onColorInvertedToggle}
+                                        />
+                                        {'inverse?'}
+                                    </label>
+                                    <label>
+                                        <input
+                                            type="checkbox"
+                                            checked={useColors}
+                                            onChange={onUseColorsToggle}
+                                        />
+                                        {'use colors?'}
+                                    </label>
+                                </div>
                             </div>
                         )}
                     </div>
@@ -279,22 +334,6 @@ export const DotsMenu = ({
                                     <label>
                                         <input
                                             type="checkbox"
-                                            checked={isColorInverted}
-                                            onChange={onColorInvertedToggle}
-                                        />
-                                        {'inverse?'}
-                                    </label>
-                                    <label>
-                                        <input
-                                            type="checkbox"
-                                            checked={useColors}
-                                            onChange={onUseColorsToggle}
-                                        />
-                                        {'use colors?'}
-                                    </label>
-                                    <label>
-                                        <input
-                                            type="checkbox"
                                             checked={forceOGColors}
                                             onChange={onForceOGColorsToggle}
                                         />
@@ -315,7 +354,7 @@ export const DotsMenu = ({
                                         label={whitePoint.toString()}
                                         value={whitePoint}
                                         min={0}
-                                        max={255}
+                                        max={256}
                                         step={1}
                                         onChange={onWhitePointChange}
                                     />
@@ -331,6 +370,83 @@ export const DotsMenu = ({
                                         onChange={onFrameRateChange}
                                     />
                                 )}
+                            </div>
+                        )}
+                    </div>
+
+                    <div className="control-section">
+                        <div
+                            className="control-collapse-header"
+                            onClick={() => setIsBackgroundOpen(!isBackgroundOpen)}
+                        >
+                            <span className="control-label">
+                                <span>{isBackgroundOpen ? '↓' : '→'}</span>
+                                <span>background</span>
+                            </span>
+                        </div>
+                        {isBackgroundOpen && (
+                            <div className="control-collapse-content">
+                                <div className="checkboxes">
+                                    <label className={hasCustomBg ? 'control-disabled' : ''}>
+                                        <input
+                                            type="checkbox"
+                                            checked={showOriginalBackground && !hasCustomBg}
+                                            onChange={onShowOriginalBackgroundToggle}
+                                            disabled={hasCustomBg}
+                                        />
+                                        {'show original?'}
+                                    </label>
+                                    <label>
+                                        <input
+                                            type="checkbox"
+                                            checked={showDots}
+                                            onChange={onShowDotsToggle}
+                                        />
+                                        {'show dots?'}
+                                    </label>
+                                    <label>
+                                        <input
+                                            type="checkbox"
+                                            checked={applyGradingToOriginal}
+                                            onChange={onApplyGradingToOriginalToggle}
+                                        />
+                                        {'apply grading to original?'}
+                                    </label>
+                                </div>
+                                <label className="control-label" style={{ marginTop: 10 }}>custom background</label>
+                                <div className="control-small-buttons">
+                                    <label htmlFor="bg-upload" className="control-button">
+                                        image
+                                    </label>
+                                    <label htmlFor="bg-video-upload" className="control-button">
+                                        video
+                                    </label>
+                                    {hasCustomBg && (
+                                        <button className="control-button" onClick={onCustomBgClear}>
+                                            clear
+                                        </button>
+                                    )}
+                                </div>
+                                <input
+                                    id="bg-upload"
+                                    type="file"
+                                    accept="image/*"
+                                    className="file-upload-input"
+                                    onChange={(e) => {
+                                        const f = e.target.files?.[0];
+                                        if (f) onCustomBgUpload(f);
+                                    }}
+                                />
+                                <input
+                                    id="bg-video-upload"
+                                    type="file"
+                                    accept="video/*"
+                                    className="file-upload-input"
+                                    onChange={(e) => {
+                                        const f = e.target.files?.[0];
+                                        if (f) onCustomBgUpload(f);
+                                    }}
+                                />
                             </div>
                         )}
                     </div>

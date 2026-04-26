@@ -202,6 +202,15 @@
   text-transform: lowercase;
 }
 
+/* Color preview */
+.color-preview {
+  width: 100%;
+  height: 30px;
+  object-fit: cover;
+  margin-bottom: 10px;
+  image-rendering: pixelated;
+}
+
 /* Collapsible sections */
 .control-section {
   margin-bottom: 25px;

@@ -105,6 +105,57 @@ const DotsPage: React.FC = () => {
     // Show original image/video as background
     const [showOriginalBackground, setShowOriginalBackground] = React.useState(PRESETS[0].showOriginalBackground);
 
+    // Apply color grading to the original background
+    const [applyGradingToOriginal, setApplyGradingToOriginal] = React.useState(false);
+
+    // Show dots overlay
+    const [showDots, setShowDots] = React.useState(true);
+
+    // Custom background (replaces "show original")
+    const [customBgElement, setCustomBgElement] = React.useState<HTMLVideoElement | HTMLImageElement | null>(null);
+    const hasCustomBg = customBgElement !== null;
+
+    const handleCustomBgUpload = React.useCallback((file: File) => {
+        // Clean up previous custom bg
+        if (customBgElement) {
+            if (customBgElement instanceof HTMLVideoElement) {
+                customBgElement.pause();
+                if (customBgElement.src) URL.revokeObjectURL(customBgElement.src);
+            }
+        }
+
+        const isVideo = file.type.startsWith('video/') || /\.(mp4|mov|webm|avi|mkv)$/i.test(file.name);
+        if (isVideo) {
+            const video = document.createElement('video');
+            video.muted = true;
+            video.playsInline = true;
+            video.loop = true;
+            video.src = URL.createObjectURL(file);
+            video.addEventListener('loadedmetadata', () => {
+                setCustomBgElement(video);
+                setShowOriginalBackground(false);
+                video.play().catch(console.warn);
+            });
+        } else {
+            const img = new Image();
+            img.onload = () => {
+                setCustomBgElement(img);
+                setShowOriginalBackground(false);
+            };
+            img.src = URL.createObjectURL(file);
+        }
+    }, [customBgElement]);
+
+    const clearCustomBg = React.useCallback(() => {
+        if (customBgElement) {
+            if (customBgElement instanceof HTMLVideoElement) {
+                customBgElement.pause();
+                if (customBgElement.src) URL.revokeObjectURL(customBgElement.src);
+            }
+        }
+        setCustomBgElement(null);
+    }, [customBgElement]);
+
     // Active preset name
     const [activePreset, setActivePreset] = React.useState(PRESETS[0].name);
 
@@ -392,6 +443,7 @@ const DotsPage: React.FC = () => {
                 onVideoUpload={handleVideoUpload}
                 onImageUpload={handleImageUpload}
                 isVideo={isStreamingVideo}
+                pixelData={pixelData}
                 isColorInverted={isColorInverted}
                 onColorInvertedToggle={handleColorInvertedToggle}
                 contrast={contrast}
@@ -419,6 +471,13 @@ const DotsPage: React.FC = () => {
                 onFrameRateChange={setFrameRate}
                 showOriginalBackground={showOriginalBackground}
                 onShowOriginalBackgroundToggle={() => setShowOriginalBackground(v => !v)}
+                showDots={showDots}
+                onShowDotsToggle={() => setShowDots(v => !v)}
+                applyGradingToOriginal={applyGradingToOriginal}
+                onApplyGradingToOriginalToggle={() => setApplyGradingToOriginal(v => !v)}
+                hasCustomBg={hasCustomBg}
+                onCustomBgUpload={handleCustomBgUpload}
+                onCustomBgClear={clearCustomBg}
                 presets={PRESETS}
                 activePreset={activePreset}
                 onPresetChange={applyPreset}
@@ -436,6 +495,9 @@ const DotsPage: React.FC = () => {
                 removeWhite={removeWhite}
                 whitePoint={whitePoint}
                 showOriginalBackground={showOriginalBackground}
+                applyGradingToOriginal={applyGradingToOriginal}
+                showDots={showDots}
+                customBgElement={customBgElement}
                 sourceFile={currentFile}
                 videoElement={isStreamingVideo ? videoElement : null}
                 className="dots-canvas"
