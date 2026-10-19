@@ -1,5 +1,7 @@
 import React from 'react';
-import { downloadBlob, ExportInput, ExportSize, exportImage, exportVideo, getAvailableSizes } from '../export';
+import { downloadBlob, ExportInput, ExportSize, exportImage, exportVideo, getAvailableSizes, SizeId } from '../export';
+
+const SIZE_LABELS: Record<SizeId, string> = { max: 'max', '4k': '4K', '1080p': '1080p', screen: 'screen' };
 
 const FPS_OPTIONS = [24, 25, 30, 50, 60];
 
@@ -22,7 +24,7 @@ export const ExportPanel: React.FC<ExportPanelProps> = ({ getExportInput, disabl
     const [isOpen, setIsOpen] = React.useState(false);
     const [fps, setFps] = React.useState(30);
     const [sizes, setSizes] = React.useState<ExportSize[] | null>(null);
-    const [scale, setScale] = React.useState<number | null>(null);
+    const [sizeId, setSizeId] = React.useState<SizeId>('max');
     const [status, setStatus] = React.useState<Status>({ kind: 'idle' });
     const abortRef = React.useRef<AbortController | null>(null);
     const sizesKindRef = React.useRef<string | null>(null);
@@ -32,7 +34,7 @@ export const ExportPanel: React.FC<ExportPanelProps> = ({ getExportInput, disabl
     const running = status.kind === 'running';
 
     // Find which sizes this browser can produce whenever the panel opens or settings change.
-    // Default to the largest ("full possible size").
+    // Defaults to "max".
     const sizeKey = input ? `${input.source.kind}:${input.settings.displayWidth}x${input.settings.displayHeight}:${fps}` : '';
     React.useEffect(() => {
         if (!isOpen || !sizeKey || running) return;
@@ -43,16 +45,10 @@ export const ExportPanel: React.FC<ExportPanelProps> = ({ getExportInput, disabl
         getAvailableSizes(current.settings, current.source.kind === 'video', fps).then((available) => {
             if (cancelled) return;
             setSizes(available);
-            // Keep the user's pick if still possible for the same kind of source, else the largest
+            // Keep the user's pick if still offered for the same kind of source, else max
             const sameKind = sizesKindRef.current === current.source.kind;
             sizesKindRef.current = current.source.kind;
-            setScale((prev) =>
-                sameKind && available.some((s) => s.scale === prev)
-                    ? prev
-                    : available.length
-                    ? available[available.length - 1].scale
-                    : null
-            );
+            setSizeId((prev) => (sameKind && available.some((s) => s.id === prev) ? prev : 'max'));
         });
         return () => {
             cancelled = true;
@@ -61,7 +57,7 @@ export const ExportPanel: React.FC<ExportPanelProps> = ({ getExportInput, disabl
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [isOpen, sizeKey, running]);
 
-    const selectedSize = sizes?.find((s) => s.scale === scale) ?? null;
+    const selectedSize = sizes?.find((s) => s.id === sizeId) ?? null;
 
     const codecLabel = selectedSize?.encoder?.label ?? null;
 
@@ -117,14 +113,14 @@ export const ExportPanel: React.FC<ExportPanelProps> = ({ getExportInput, disabl
                                 <select
                                     id="export-size"
                                     className="control-select"
-                                    value={scale ?? ''}
+                                    value={sizes ? sizeId : ''}
                                     disabled={running || !sizes?.length}
-                                    onChange={(e) => setScale(Number(e.target.value))}
+                                    onChange={(e) => setSizeId(e.target.value as SizeId)}
                                 >
                                     {!sizes && <option value="">checking…</option>}
                                     {sizes?.map((s) => (
-                                        <option key={s.scale} value={s.scale}>
-                                            {s.width}×{s.height} ({s.scale}×)
+                                        <option key={s.id} value={s.id}>
+                                            {SIZE_LABELS[s.id]} · {s.width}×{s.height}
                                         </option>
                                     ))}
                                 </select>
@@ -145,7 +141,7 @@ export const ExportPanel: React.FC<ExportPanelProps> = ({ getExportInput, disabl
                                     </select>
                                 </div>
                             )}
-                            {sizes?.length === 0 && <div>this browser can't export {isVideo ? 'video' : 'images'} at this size</div>}
+                            {sizes?.length === 0 && <div>this browser can't export {isVideo ? 'video' : 'images'}</div>}
                             {running ? (
                                 <>
                                     <div>

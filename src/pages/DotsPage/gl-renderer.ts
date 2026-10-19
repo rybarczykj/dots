@@ -8,6 +8,8 @@ const DOTS_VS = `#version 300 es
 in vec2 aCorner;
 in float aSize;
 in vec4 aColor;
+// Visible region in CSS px: origin and size (a tile of the frame when exporting large images)
+uniform vec2 uOrigin;
 uniform vec2 uCanvas;
 uniform float uSpacing;
 uniform int uCols;
@@ -28,7 +30,8 @@ void main() {
     vLocal = local;
     vSize = aSize;
     vColor = aColor;
-    gl_Position = vec4(pos.x / uCanvas.x * 2.0 - 1.0, 1.0 - pos.y / uCanvas.y * 2.0, 0.0, 1.0);
+    vec2 p = pos - uOrigin;
+    gl_Position = vec4(p.x / uCanvas.x * 2.0 - 1.0, 1.0 - p.y / uCanvas.y * 2.0, 0.0, 1.0);
 }`;
 
 const DOTS_FS = `#version 300 es
@@ -86,10 +89,13 @@ void main() {
 
 const BG_VS = `#version 300 es
 in vec2 aCorner;
-uniform vec2 uUvScale;
+// Visible region and full background size, in CSS px
+uniform vec2 uOrigin;
+uniform vec2 uView;
+uniform vec2 uBgSize;
 out vec2 vUv;
 void main() {
-    vUv = vec2(aCorner.x * 0.5 + 0.5, 0.5 - aCorner.y * 0.5) * uUvScale;
+    vUv = (uOrigin + vec2(aCorner.x * 0.5 + 0.5, 0.5 - aCorner.y * 0.5) * uView) / uBgSize;
     gl_Position = vec4(aCorner, 0.0, 1.0);
 }`;
 
@@ -193,11 +199,12 @@ export class DotsGLRenderer {
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
         this.uniforms = {};
-        for (const name of ['uCanvas', 'uSpacing', 'uCols', 'uDpr', 'uShape']) {
+        for (const name of ['uOrigin', 'uCanvas', 'uSpacing', 'uCols', 'uDpr', 'uShape']) {
             this.uniforms[name] = gl.getUniformLocation(this.dotsProgram, name);
         }
-        this.uniforms.uTex = gl.getUniformLocation(this.bgProgram, 'uTex');
-        this.uniforms.uUvScale = gl.getUniformLocation(this.bgProgram, 'uUvScale');
+        for (const name of ['uTex', 'uOrigin', 'uView', 'uBgSize']) {
+            this.uniforms[`bg_${name}`] = gl.getUniformLocation(this.bgProgram, name);
+        }
         this.maxTextureSize = gl.getParameter(gl.MAX_TEXTURE_SIZE);
     }
 
@@ -211,17 +218,25 @@ export class DotsGLRenderer {
         /** Exact output size in device pixels (export); defaults to floor(size * dpr) */
         pixelWidth?: number;
         pixelHeight?: number;
+        /** Render only this region of the frame, in device pixels (tiled export of huge images) */
+        tile?: { x: number; y: number; width: number; height: number };
     }) {
         const { gl } = this;
         const canvas = gl.canvas as HTMLCanvasElement;
         // Truncate like a 2D canvas (and p5) does with fractional sizes
         const pxWidth = opts.pixelWidth ?? Math.floor(opts.width * opts.dpr);
         const pxHeight = opts.pixelHeight ?? Math.floor(opts.height * opts.dpr);
-        if (canvas.width !== pxWidth || canvas.height !== pxHeight) {
-            canvas.width = pxWidth;
-            canvas.height = pxHeight;
+        const tile = opts.tile ?? { x: 0, y: 0, width: pxWidth, height: pxHeight };
+        if (canvas.width !== tile.width || canvas.height !== tile.height) {
+            canvas.width = tile.width;
+            canvas.height = tile.height;
         }
-        gl.viewport(0, 0, pxWidth, pxHeight);
+        gl.viewport(0, 0, tile.width, tile.height);
+        // Visible region in CSS px, so 1 unit = dpr device pixels even after truncation
+        const originX = tile.x / opts.dpr;
+        const originY = tile.y / opts.dpr;
+        const viewWidth = tile.width / opts.dpr;
+        const viewHeight = tile.height / opts.dpr;
         gl.clearColor(1, 1, 1, 1);
         gl.clear(gl.COLOR_BUFFER_BIT);
 
@@ -237,9 +252,11 @@ export class DotsGLRenderer {
                 gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, this.fitToTexture(opts.background));
                 this.uploadedBackground = opts.background;
             }
-            gl.uniform1i(this.uniforms.uTex, 0);
+            gl.uniform1i(this.uniforms.bg_uTex, 0);
+            gl.uniform2f(this.uniforms.bg_uOrigin, originX, originY);
+            gl.uniform2f(this.uniforms.bg_uView, viewWidth, viewHeight);
             // Background spans the untruncated size; the viewport may crop its edge
-            gl.uniform2f(this.uniforms.uUvScale, pxWidth / opts.dpr / opts.width, pxHeight / opts.dpr / opts.height);
+            gl.uniform2f(this.uniforms.bg_uBgSize, opts.width, opts.height);
             gl.bindVertexArray(this.bgVao);
             gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
         }
@@ -253,8 +270,8 @@ export class DotsGLRenderer {
             gl.bufferData(gl.ARRAY_BUFFER, layout.sizes, gl.DYNAMIC_DRAW);
             gl.bindBuffer(gl.ARRAY_BUFFER, this.colorBuffer);
             gl.bufferData(gl.ARRAY_BUFFER, layout.colors, gl.DYNAMIC_DRAW);
-            // Viewport size in CSS px, so 1 unit = dpr device pixels even after truncation
-            gl.uniform2f(this.uniforms.uCanvas, pxWidth / opts.dpr, pxHeight / opts.dpr);
+            gl.uniform2f(this.uniforms.uOrigin, originX, originY);
+            gl.uniform2f(this.uniforms.uCanvas, viewWidth, viewHeight);
             gl.uniform1f(this.uniforms.uSpacing, layout.dotSpacing);
             gl.uniform1i(this.uniforms.uCols, layout.cols);
             gl.uniform1f(this.uniforms.uDpr, opts.dpr);

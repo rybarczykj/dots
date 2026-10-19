@@ -5,7 +5,7 @@ import { ArrayBufferTarget, Muxer } from 'mp4-muxer';
 import { DotShape } from './components/DotsMenu';
 import { computeDotLayout, DotLayout, DotLayoutParams, getShapeName } from './dot-layout';
 import { grabVideoFrame, processImageForDots, ProcessedPixelData } from './dots-utils';
-import { createBackgroundPicker } from './background';
+import { BackgroundSource, createBackgroundPicker } from './background';
 import { DotsGLRenderer } from './gl-renderer';
 
 export interface ExportSettings {
@@ -37,7 +37,10 @@ export interface ExportInput {
     customBg: HTMLVideoElement | HTMLImageElement | null;
 }
 
+export type SizeId = 'max' | '4k' | '1080p' | 'screen';
+
 export interface ExportSize {
+    id: SizeId;
     scale: number;
     width: number;
     height: number;
@@ -45,43 +48,52 @@ export interface ExportSize {
     encoder?: EncoderChoice;
 }
 
-// Larger frames fail silently on some GPUs, and Safari caps canvases at 16.7 MP
-const MAX_SIDE = 8192;
-const MAX_PIXELS = 4096 * 4096;
-const SCALES = [1, 2, 3, 4, 6, 8];
 const even = (n: number) => Math.max(2, Math.floor(n / 2) * 2);
 
-export const getExportSize = (settings: ExportSettings, scale: number, forVideo: boolean): ExportSize => {
+export const getExportSize = (settings: ExportSettings, scale: number, forVideo: boolean): Omit<ExportSize, 'id'> => {
     const width = Math.round(settings.displayWidth * scale);
     const height = Math.floor(settings.displayHeight * scale);
-    // H.264 needs even dimensions
+    // H.264/HEVC need even dimensions
     return forVideo ? { scale, width: even(width), height: even(height) } : { scale, width, height };
 };
 
-// H.264 plays everywhere (QuickTime included); VP9 is the fallback for browsers
-// without an H.264 encoder (e.g. open-source Chromium builds)
-const CODECS: { codec: string; mux: 'avc' | 'vp9'; label: string }[] = [
+// QuickTime plays H.264 and HEVC. H.264 is preferred (plays everywhere) and tops out
+// around 4096×2304; HEVC (hardware on Macs) goes to 8K.
+const PLAYABLE_CODECS: { codec: string; mux: 'avc' | 'hevc' | 'vp9'; label: string }[] = [
     { codec: 'avc1.640034', mux: 'avc', label: 'h.264' },
     { codec: 'avc1.640033', mux: 'avc', label: 'h.264' },
-    { codec: 'avc1.64002A', mux: 'avc', label: 'h.264' },
     { codec: 'avc1.4D0034', mux: 'avc', label: 'h.264' },
+    { codec: 'hvc1.1.6.L156.B0', mux: 'hevc', label: 'hevc' },
+    { codec: 'hvc1.1.6.L183.B0', mux: 'hevc', label: 'hevc' },
+    { codec: 'hvc1.1.6.L186.B0', mux: 'hevc', label: 'hevc' },
+];
+// Only for browsers with neither H.264 nor HEVC encoding (e.g. open-source Chromium);
+// QuickTime can't play it
+const FALLBACK_CODECS: typeof PLAYABLE_CODECS = [
     { codec: 'vp09.00.51.08', mux: 'vp9', label: 'vp9' },
     { codec: 'vp09.00.62.08', mux: 'vp9', label: 'vp9' },
 ];
 
 export interface EncoderChoice {
     config: VideoEncoderConfig;
-    mux: 'avc' | 'vp9';
+    mux: 'avc' | 'hevc' | 'vp9';
     label: string;
 }
 
-const findEncoderConfig = async (width: number, height: number, fps: number): Promise<EncoderChoice | null> => {
+const findEncoderConfig = async (
+    width: number,
+    height: number,
+    fps: number,
+    codecs = PLAYABLE_CODECS
+): Promise<EncoderChoice | null> => {
     if (typeof VideoEncoder === 'undefined') return null;
     // Dots are high-detail: ~0.3 bits per pixel, capped at 150 Mbps
     const bitrate = Math.min(150_000_000, Math.round(width * height * fps * 0.3));
-    for (const { codec, mux, label } of CODECS) {
+    for (const { codec, mux, label } of codecs) {
         const config: VideoEncoderConfig = { codec, width, height, bitrate, framerate: fps };
         if (mux === 'avc') config.avc = { format: 'avc' };
+        // mp4 needs length-prefixed HEVC with a decoder description, not Annex B
+        if (mux === 'hevc') (config as VideoEncoderConfig & { hevc: { format: string } }).hevc = { format: 'hevc' };
         try {
             const { supported } = await VideoEncoder.isConfigSupported(config);
             if (supported) return { config, mux, label };
@@ -92,15 +104,143 @@ const findEncoderConfig = async (width: number, height: number, fps: number): Pr
     return null;
 };
 
-/** Sizes this browser can export, smallest first */
+// Chrome's canvas area limit; the canvas probe below finds the real limit under it
+const MAX_CANVAS_PIXELS = 268_435_456;
+// Frames bigger than this are rendered in tiles: huge single GPU canvases fail silently
+const TILE = 4096;
+const canvasProbeCache = new Map<string, boolean>();
+
+/** Allocate a 2D canvas and prove it works (oversized canvases silently draw nothing) */
+const createWorkingCanvas = (width: number, height: number): HTMLCanvasElement | null => {
+    try {
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx || canvas.width !== width || canvas.height !== height) return null;
+        ctx.fillStyle = 'rgb(51, 102, 153)';
+        ctx.fillRect(width - 1, height - 1, 1, 1);
+        const px = ctx.getImageData(width - 1, height - 1, 1, 1).data;
+        if (px[0] !== 51 || px[1] !== 102 || px[2] !== 153) return null;
+        return canvas;
+    } catch {
+        return null;
+    }
+};
+
+/** Whether a frame this big can be produced (tiles always can; a big frame needs its canvas) */
+const canProduceFrame = (width: number, height: number): boolean => {
+    if (width <= TILE && height <= TILE) return true;
+    const key = `${width}x${height}`;
+    let ok = canvasProbeCache.get(key);
+    if (ok === undefined) {
+        const canvas = createWorkingCanvas(width, height);
+        ok = canvas !== null;
+        if (canvas) canvas.width = canvas.height = 0; // free it now
+        canvasProbeCache.set(key, ok);
+    }
+    return ok;
+};
+
+/**
+ * Renders export frames at any size. Up to TILE in both dimensions it draws directly on a GPU
+ * canvas; above that it draws TILE-sized pieces and assembles them on a 2D canvas.
+ */
+class FrameRenderer {
+    private glCanvas = document.createElement('canvas');
+    private renderer = new DotsGLRenderer(this.glCanvas);
+    private composite: HTMLCanvasElement | null = null;
+
+    constructor(private settings: ExportSettings, private size: ExportSize) {}
+
+    /** Render one frame and return the canvas holding it */
+    render(background: BackgroundSource | null, layout: DotLayout | null, shape: DotShape): HTMLCanvasElement {
+        const { settings, size, renderer } = this;
+        const frame = {
+            width: settings.displayWidth,
+            height: settings.displayHeight,
+            dpr: size.scale,
+            pixelWidth: size.width,
+            pixelHeight: size.height,
+            background,
+            layout,
+            shape: getShapeName(shape),
+        };
+        if (size.width <= TILE && size.height <= TILE) {
+            renderer.render(frame);
+            renderer.assertRendered();
+            return this.glCanvas;
+        }
+        this.composite ??= createWorkingCanvas(size.width, size.height);
+        if (!this.composite) throw new Error(`Not enough memory for ${size.width}×${size.height}. Try a smaller size.`);
+        const ctx = this.composite.getContext('2d')!;
+        for (let y = 0; y < size.height; y += TILE) {
+            for (let x = 0; x < size.width; x += TILE) {
+                const tile = { x, y, width: Math.min(TILE, size.width - x), height: Math.min(TILE, size.height - y) };
+                renderer.render({ ...frame, tile });
+                renderer.assertRendered();
+                ctx.drawImage(this.glCanvas, x, y);
+            }
+        }
+        return this.composite;
+    }
+
+    dispose() {
+        this.renderer.dispose();
+        if (this.composite) this.composite.width = this.composite.height = 0;
+    }
+}
+
+/** Largest scale (to 0.5% precision) for which `fits` holds, assuming smaller always fits */
+const findMaxScale = async (upper: number, fits: (scale: number) => Promise<boolean> | boolean): Promise<number | null> => {
+    if (await fits(upper)) return upper;
+    let lo = 0;
+    let hi = upper;
+    while (hi - lo > upper * 0.005) {
+        const mid = (lo + hi) / 2;
+        if (await fits(mid)) lo = mid;
+        else hi = mid;
+    }
+    return lo > 0 ? lo : null;
+};
+
+/**
+ * Export sizes for this browser, largest first: "max" (everything the GPU and encoder allow),
+ * then 4K / 1080p (by long side) and the on-screen size when smaller than max.
+ */
 export const getAvailableSizes = async (settings: ExportSettings, forVideo: boolean, fps: number): Promise<ExportSize[]> => {
-    const sizes: ExportSize[] = [];
-    for (const scale of SCALES) {
+    const { displayWidth: w, displayHeight: h } = settings;
+    const longSide = Math.max(w, h);
+    const upper = Math.min(16384 / longSide, Math.sqrt(MAX_CANVAS_PIXELS / (w * h)));
+
+    let codecs = PLAYABLE_CODECS;
+    if (forVideo) {
+        const small = getExportSize(settings, 640 / longSide, true);
+        if (!(await findEncoderConfig(small.width, small.height, fps))) codecs = FALLBACK_CODECS;
+    }
+    const fits = async (scale: number) => {
         const size = getExportSize(settings, scale, forVideo);
-        if (size.width > MAX_SIDE || size.height > MAX_SIDE || size.width * size.height > MAX_PIXELS) break;
+        if (!canProduceFrame(size.width, size.height)) return false;
+        return !forVideo || !!(await findEncoderConfig(size.width, size.height, fps, codecs));
+    };
+
+    const maxScale = await findMaxScale(upper, fits);
+    if (maxScale === null) return [];
+
+    const candidates: { id: SizeId; scale: number }[] = [
+        { id: 'max', scale: maxScale },
+        { id: '4k', scale: 3840 / longSide },
+        { id: '1080p', scale: 1920 / longSide },
+        { id: 'screen', scale: 1 },
+    ];
+    const sizes: ExportSize[] = [];
+    for (const { id, scale } of candidates) {
+        // Skip presets at or above max (within 2%, so "4K" doesn't duplicate a 4096 max)
+        if (id !== 'max' && scale > maxScale * 0.98) continue;
+        const size: ExportSize = { id, ...getExportSize(settings, scale, forVideo) };
         if (forVideo) {
-            const encoder = await findEncoderConfig(size.width, size.height, fps);
-            if (!encoder) break;
+            const encoder = await findEncoderConfig(size.width, size.height, fps, codecs);
+            if (!encoder) continue;
             size.encoder = encoder;
         }
         sizes.push(size);
@@ -182,32 +322,25 @@ export const exportImage = async (input: ExportInput, size: ExportSize): Promise
     const { settings } = input;
     const { pixelData } = input.source;
     const original = await loadImage(input.source.file);
-    let renderer: DotsGLRenderer | null = null;
+    let frames: FrameRenderer | null = null;
     try {
-        const canvas = document.createElement('canvas');
-        renderer = new DotsGLRenderer(canvas);
-        renderer.render({
-            width: settings.displayWidth,
-            height: settings.displayHeight,
-            dpr: size.scale,
-            pixelWidth: size.width,
-            pixelHeight: size.height,
-            background: createBackgroundPicker()({
+        frames = new FrameRenderer(settings, size);
+        const canvas = frames.render(
+            createBackgroundPicker()({
                 customBg: input.customBg,
                 showOriginalBackground: settings.showOriginalBackground,
                 applyGradingToOriginal: settings.applyGradingToOriginal,
                 pixelData,
                 original,
             }),
-            layout: layoutFor(settings, pixelData, null),
-            shape: getShapeName(settings.shape),
-        });
-        renderer.assertRendered();
+            layoutFor(settings, pixelData, null),
+            settings.shape
+        );
         return await new Promise<Blob>((resolve, reject) =>
             canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error('PNG encoding failed'))), 'image/png')
         );
     } finally {
-        renderer?.dispose();
+        frames?.dispose();
         URL.revokeObjectURL(original.src);
     }
 };
@@ -226,15 +359,14 @@ export const exportVideo = async (
 
     let video: HTMLVideoElement | null = null;
     let bgCopy: HTMLVideoElement | null = null;
-    let renderer: DotsGLRenderer | null = null;
+    let frames: FrameRenderer | null = null;
     let encoder: VideoEncoder | null = null;
     try {
         video = await loadVideo(input.source.url);
         // Export a private copy of a video background so the live one keeps playing
         if (input.customBg instanceof HTMLVideoElement) bgCopy = await loadVideo(input.customBg.src);
         const customBg = bgCopy ?? input.customBg;
-        const canvas = document.createElement('canvas');
-        renderer = new DotsGLRenderer(canvas);
+        frames = new FrameRenderer(settings, size);
         const grabCanvas = document.createElement('canvas');
         const pickBackground = createBackgroundPicker();
 
@@ -293,13 +425,8 @@ export const exportVideo = async (
                 lastSlot = slot;
             }
 
-            renderer.render({
-                width: settings.displayWidth,
-                height: settings.displayHeight,
-                dpr: size.scale,
-                pixelWidth: size.width,
-                pixelHeight: size.height,
-                background: pickBackground({
+            const canvas = frames.render(
+                pickBackground({
                     customBg,
                     showOriginalBackground: settings.showOriginalBackground,
                     applyGradingToOriginal: settings.applyGradingToOriginal,
@@ -307,10 +434,8 @@ export const exportVideo = async (
                     original: video,
                 }),
                 layout,
-                shape: getShapeName(settings.shape),
-            });
-
-            renderer.assertRendered();
+                settings.shape
+            );
             const frame = new VideoFrame(canvas, { timestamp: Math.round((i * 1e6) / fps), duration: Math.round(1e6 / fps) });
             encoder.encode(frame, { keyFrame: i % (fps * 2) === 0 });
             frame.close();
@@ -327,7 +452,7 @@ export const exportVideo = async (
         return new Blob([muxer.target.buffer], { type: 'video/mp4' });
     } finally {
         if (encoder && encoder.state !== 'closed') encoder.close();
-        renderer?.dispose();
+        frames?.dispose();
         if (video) unloadVideo(video);
         if (bgCopy) unloadVideo(bgCopy);
     }
