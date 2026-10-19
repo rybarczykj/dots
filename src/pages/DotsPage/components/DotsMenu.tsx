@@ -56,6 +56,7 @@ interface DotsMenuProps {
     onShowDotsToggle: () => void;
     useGPU: boolean;
     onUseGPUToggle: () => void;
+    gpuUnavailable: boolean;
     applyGradingToOriginal: boolean;
     onApplyGradingToOriginalToggle: () => void;
     hasCustomBg: boolean;
@@ -104,6 +105,7 @@ export const DotsMenu = ({
     onShowDotsToggle,
     useGPU,
     onUseGPUToggle,
+    gpuUnavailable,
     applyGradingToOriginal,
     onApplyGradingToOriginalToggle,
     hasCustomBg,
@@ -220,9 +222,14 @@ export const DotsMenu = ({
                             onChange={(newZoom) => onSpecsChange({ ...specs, zoom: newZoom })}
                         />
                         <div className="checkboxes">
-                            <label>
-                                <input type="checkbox" checked={useGPU} onChange={onUseGPUToggle} />
-                                {'gpu renderer?'}
+                            <label className={gpuUnavailable ? 'control-disabled' : ''}>
+                                <input
+                                    type="checkbox"
+                                    checked={useGPU}
+                                    onChange={onUseGPUToggle}
+                                    disabled={gpuUnavailable}
+                                />
+                                {gpuUnavailable ? 'gpu renderer (unavailable)' : 'gpu renderer?'}
                             </label>
                         </div>
                     </div>

@@ -41,6 +41,8 @@ export interface ExportSize {
     scale: number;
     width: number;
     height: number;
+    /** Video only: the encoder this size will use, found when sizes are listed */
+    encoder?: EncoderChoice;
 }
 
 // Larger frames fail silently on some GPUs, and Safari caps canvases at 16.7 MP
@@ -67,7 +69,7 @@ const CODECS: { codec: string; mux: 'avc' | 'vp9'; label: string }[] = [
     { codec: 'vp09.00.62.08', mux: 'vp9', label: 'vp9' },
 ];
 
-interface EncoderChoice {
+export interface EncoderChoice {
     config: VideoEncoderConfig;
     mux: 'avc' | 'vp9';
     label: string;
@@ -90,17 +92,17 @@ const findEncoderConfig = async (width: number, height: number, fps: number): Pr
     return null;
 };
 
-/** Codec the video export will use at this size, e.g. "h.264" */
-export const getVideoCodecLabel = async (size: ExportSize, fps: number) =>
-    (await findEncoderConfig(size.width, size.height, fps))?.label ?? null;
-
 /** Sizes this browser can export, smallest first */
 export const getAvailableSizes = async (settings: ExportSettings, forVideo: boolean, fps: number): Promise<ExportSize[]> => {
     const sizes: ExportSize[] = [];
     for (const scale of SCALES) {
         const size = getExportSize(settings, scale, forVideo);
         if (size.width > MAX_SIDE || size.height > MAX_SIDE || size.width * size.height > MAX_PIXELS) break;
-        if (forVideo && !(await findEncoderConfig(size.width, size.height, fps))) break;
+        if (forVideo) {
+            const encoder = await findEncoderConfig(size.width, size.height, fps);
+            if (!encoder) break;
+            size.encoder = encoder;
+        }
         sizes.push(size);
     }
     return sizes;
@@ -125,23 +127,49 @@ const loadVideo = (url: string) =>
         video.src = url;
     });
 
-const seek = (video: HTMLVideoElement, time: number) =>
-    new Promise<void>((resolve) => {
+const abortError = () => new DOMException('Export cancelled', 'AbortError');
+
+const SEEK_TIMEOUT_MS = 10_000;
+
+/** Seek and wait for the frame. Rejects on decode error, stall or cancel instead of hanging. */
+const seek = (video: HTMLVideoElement, time: number, signal: AbortSignal) =>
+    new Promise<void>((resolve, reject) => {
+        if (signal.aborted) {
+            reject(abortError());
+            return;
+        }
         if (Math.abs(video.currentTime - time) < 1e-6 && video.readyState >= 2) {
             resolve();
             return;
         }
-        video.addEventListener('seeked', () => resolve(), { once: true });
+        const finish = (error?: Error) => {
+            clearTimeout(timer);
+            video.removeEventListener('seeked', onSeeked);
+            video.removeEventListener('error', onError);
+            signal.removeEventListener('abort', onAbort);
+            if (error) reject(error);
+            else resolve();
+        };
+        const onSeeked = () => finish();
+        const onError = () => finish(new Error(`The video failed to decode at ${time.toFixed(2)}s.`));
+        const onAbort = () => finish(abortError());
+        const timer = setTimeout(
+            () => finish(new Error(`The video stopped responding at ${time.toFixed(2)}s. Try re-saving it as mp4.`)),
+            SEEK_TIMEOUT_MS
+        );
+        video.addEventListener('seeked', onSeeked);
+        video.addEventListener('error', onError);
+        signal.addEventListener('abort', onAbort);
         video.currentTime = time;
     });
 
-const checkAborted = (signal: AbortSignal) => {
-    if (signal.aborted) throw new DOMException('Export cancelled', 'AbortError');
+const unloadVideo = (video: HTMLVideoElement) => {
+    video.removeAttribute('src');
+    video.load();
 };
 
-const createRenderer = () => {
-    const canvas = document.createElement('canvas');
-    return { canvas, renderer: new DotsGLRenderer(canvas) };
+const checkAborted = (signal: AbortSignal) => {
+    if (signal.aborted) throw abortError();
 };
 
 const layoutFor = (settings: ExportSettings, pixelData: ProcessedPixelData, reuse: DotLayout | null) =>
@@ -154,8 +182,10 @@ export const exportImage = async (input: ExportInput, size: ExportSize): Promise
     const { settings } = input;
     const { pixelData } = input.source;
     const original = await loadImage(input.source.file);
-    const { canvas, renderer } = createRenderer();
+    let renderer: DotsGLRenderer | null = null;
     try {
+        const canvas = document.createElement('canvas');
+        renderer = new DotsGLRenderer(canvas);
         renderer.render({
             width: settings.displayWidth,
             height: settings.displayHeight,
@@ -177,7 +207,7 @@ export const exportImage = async (input: ExportInput, size: ExportSize): Promise
             canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error('PNG encoding failed'))), 'image/png')
         );
     } finally {
-        renderer.dispose();
+        renderer?.dispose();
         URL.revokeObjectURL(original.src);
     }
 };
@@ -191,35 +221,44 @@ export const exportVideo = async (
 ): Promise<Blob> => {
     if (input.source.kind !== 'video') throw new Error('Not a video source');
     const { settings } = input;
-    const choice = await findEncoderConfig(size.width, size.height, fps);
+    const choice = size.encoder ?? (await findEncoderConfig(size.width, size.height, fps));
     if (!choice) throw new Error(`This browser can't encode ${size.width}×${size.height} video. Try a smaller size.`);
 
-    const video = await loadVideo(input.source.url);
-    // Export a private copy of a video background so the live one keeps playing
-    const customBg =
-        input.customBg instanceof HTMLVideoElement ? await loadVideo(input.customBg.src) : input.customBg;
-    const { canvas, renderer } = createRenderer();
-    const grabCanvas = document.createElement('canvas');
-    const pickBackground = createBackgroundPicker();
-
-    const muxer = new Muxer({
-        target: new ArrayBufferTarget(),
-        video: { codec: choice.mux, width: size.width, height: size.height, frameRate: fps },
-        fastStart: 'in-memory',
-    });
-    let encodeError: Error | null = null;
-    const encoder = new VideoEncoder({
-        output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
-        error: (e) => {
-            encodeError = e;
-        },
-    });
-    encoder.configure(choice.config);
-
+    let video: HTMLVideoElement | null = null;
+    let bgCopy: HTMLVideoElement | null = null;
+    let renderer: DotsGLRenderer | null = null;
+    let encoder: VideoEncoder | null = null;
     try {
+        video = await loadVideo(input.source.url);
+        // Export a private copy of a video background so the live one keeps playing
+        if (input.customBg instanceof HTMLVideoElement) bgCopy = await loadVideo(input.customBg.src);
+        const customBg = bgCopy ?? input.customBg;
+        const canvas = document.createElement('canvas');
+        renderer = new DotsGLRenderer(canvas);
+        const grabCanvas = document.createElement('canvas');
+        const pickBackground = createBackgroundPicker();
+
         if (!Number.isFinite(video.duration)) {
             throw new Error("This video doesn't report its length, so it can't be exported. Re-save it as mp4 and try again.");
         }
+
+        const muxer = new Muxer({
+            target: new ArrayBufferTarget(),
+            video: { codec: choice.mux, width: size.width, height: size.height, frameRate: fps },
+            fastStart: 'in-memory',
+        });
+        let encodeError: Error | null = null;
+        encoder = new VideoEncoder({
+            output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
+            error: (e) => {
+                encodeError = e;
+            },
+        });
+        encoder.configure(choice.config);
+
+        // The source frame is needed every output frame only when it is the background;
+        // otherwise once per dots update, which saves most seeks at high output fps
+        const sourceIsBackground = settings.showOriginalBackground && !customBg && !settings.applyGradingToOriginal;
         const total = Math.max(1, Math.round(video.duration * fps));
         let pixelData: ProcessedPixelData | null = null;
         let layout: DotLayout | null = null;
@@ -229,14 +268,16 @@ export const exportVideo = async (
             checkAborted(signal);
             if (encodeError) throw encodeError;
             const time = i / fps;
-            await seek(video, time);
-            if (customBg instanceof HTMLVideoElement && customBg.duration > 0) {
-                await seek(customBg, time % customBg.duration);
-            }
 
             // Dots update at the chosen framerate, like the live view
             const slot = Math.floor(time * settings.frameRate);
-            if (slot !== lastSlot || !pixelData) {
+            const newSlot = slot !== lastSlot || !pixelData;
+            if (newSlot || sourceIsBackground) await seek(video, time, signal);
+            if (customBg instanceof HTMLVideoElement && customBg.duration > 0) {
+                await seek(customBg, time % customBg.duration, signal);
+            }
+
+            if (newSlot) {
                 const imageData = grabVideoFrame(video, settings.resolution, grabCanvas);
                 if (imageData) {
                     pixelData = processImageForDots(
@@ -285,14 +326,10 @@ export const exportVideo = async (
         muxer.finalize();
         return new Blob([muxer.target.buffer], { type: 'video/mp4' });
     } finally {
-        if (encoder.state !== 'closed') encoder.close();
-        renderer.dispose();
-        video.removeAttribute('src');
-        video.load();
-        if (customBg instanceof HTMLVideoElement && customBg !== input.customBg) {
-            customBg.removeAttribute('src');
-            customBg.load();
-        }
+        if (encoder && encoder.state !== 'closed') encoder.close();
+        renderer?.dispose();
+        if (video) unloadVideo(video);
+        if (bgCopy) unloadVideo(bgCopy);
     }
 };
 

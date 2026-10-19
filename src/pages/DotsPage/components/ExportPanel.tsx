@@ -1,5 +1,5 @@
 import React from 'react';
-import { downloadBlob, ExportInput, ExportSize, exportImage, exportVideo, getAvailableSizes, getVideoCodecLabel } from '../export';
+import { downloadBlob, ExportInput, ExportSize, exportImage, exportVideo, getAvailableSizes } from '../export';
 
 const FPS_OPTIONS = [24, 25, 30, 50, 60];
 
@@ -25,6 +25,7 @@ export const ExportPanel: React.FC<ExportPanelProps> = ({ getExportInput, disabl
     const [scale, setScale] = React.useState<number | null>(null);
     const [status, setStatus] = React.useState<Status>({ kind: 'idle' });
     const abortRef = React.useRef<AbortController | null>(null);
+    const sizesKindRef = React.useRef<string | null>(null);
 
     const input = isOpen ? getExportInput() : null;
     const isVideo = input?.source.kind === 'video';
@@ -42,26 +43,27 @@ export const ExportPanel: React.FC<ExportPanelProps> = ({ getExportInput, disabl
         getAvailableSizes(current.settings, current.source.kind === 'video', fps).then((available) => {
             if (cancelled) return;
             setSizes(available);
-            setScale(available.length ? available[available.length - 1].scale : null);
+            // Keep the user's pick if still possible for the same kind of source, else the largest
+            const sameKind = sizesKindRef.current === current.source.kind;
+            sizesKindRef.current = current.source.kind;
+            setScale((prev) =>
+                sameKind && available.some((s) => s.scale === prev)
+                    ? prev
+                    : available.length
+                    ? available[available.length - 1].scale
+                    : null
+            );
         });
         return () => {
             cancelled = true;
         };
+        // `running` re-runs this when an export ends, in case settings changed meanwhile
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [isOpen, sizeKey]);
+    }, [isOpen, sizeKey, running]);
 
     const selectedSize = sizes?.find((s) => s.scale === scale) ?? null;
 
-    const [codecLabel, setCodecLabel] = React.useState<string | null>(null);
-    React.useEffect(() => {
-        setCodecLabel(null);
-        if (!isVideo || !selectedSize) return;
-        let cancelled = false;
-        getVideoCodecLabel(selectedSize, fps).then((label) => !cancelled && setCodecLabel(label));
-        return () => {
-            cancelled = true;
-        };
-    }, [isVideo, selectedSize, fps]);
+    const codecLabel = selectedSize?.encoder?.label ?? null;
 
     const startExport = async () => {
         const current = getExportInput();

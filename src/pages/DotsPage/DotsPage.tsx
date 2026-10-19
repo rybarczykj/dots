@@ -6,6 +6,7 @@ import { DotsMenu, DotShape } from './components/DotsMenu';
 import { DotsCanvas, DotsRenderer } from './components/DotsCanvas';
 import { ExportPanel } from './components/ExportPanel';
 import { ExportInput } from './export';
+import { getDisplaySize } from './dot-layout';
 import { grabVideoFrame, processImageForDots, ProcessedPixelData, resizeImage } from './dots-utils';
 import { SpecsState } from '../../shared/types';
 import { PRESETS, DotsPreset } from './presets';
@@ -113,8 +114,13 @@ const DotsPage: React.FC = () => {
     // Show dots overlay
     const [showDots, setShowDots] = React.useState(true);
 
-    // Rendering backend (opt-in GPU)
+    // Rendering backend (opt-in GPU); falls back to p5 if WebGL2 isn't available
     const [renderer, setRenderer] = React.useState<DotsRenderer>('p5');
+    const [gpuUnavailable, setGPUUnavailable] = React.useState(false);
+    const handleGPUUnavailable = React.useCallback(() => {
+        setGPUUnavailable(true);
+        setRenderer('p5');
+    }, []);
 
     // Live preview pauses while exporting so export gets the full machine
     const [isExporting, setIsExporting] = React.useState(false);
@@ -359,15 +365,21 @@ const DotsPage: React.FC = () => {
         };
     }, [isStreamingVideo, videoElement, specs.resolution, contrast, brightness, gamma, isColorInverted, useColors, frameRate, isExporting]);
 
-    // Pause live videos during export, resume the ones that were playing
+    // Pause live videos during export, then resume the ones that were playing and are
+    // still in use (a background cleared mid-export stays stopped)
+    const customBgElementRef = React.useRef(customBgElement);
+    customBgElementRef.current = customBgElement;
     React.useEffect(() => {
         if (!isExporting) return;
-        const videos = [videoElement, customBgElement].filter(
+        const videos = [videoElementRef.current, customBgElementRef.current].filter(
             (v): v is HTMLVideoElement => v instanceof HTMLVideoElement && !v.paused
         );
         videos.forEach((v) => v.pause());
-        return () => videos.forEach((v) => v.play().catch(console.warn));
-    }, [isExporting, videoElement, customBgElement]);
+        return () =>
+            videos
+                .filter((v) => v === videoElementRef.current || v === customBgElementRef.current)
+                .forEach((v) => v.play().catch(console.warn));
+    }, [isExporting]);
 
     // Cleanup video element on unmount
     React.useEffect(() => {
@@ -438,8 +450,8 @@ const DotsPage: React.FC = () => {
 
     // Snapshot of current settings for export (read when export starts, so it matches the screen)
     const getExportInput = (): ExportInput | null => {
-        if (!pixelData || !sourceAspectRatio) return null;
-        const displayWidth = 1000 * specs.zoom;
+        if (!pixelData) return null;
+        const display = getDisplaySize(specs.zoom, sourceAspectRatio);
         const settings = {
             resolution: specs.resolution,
             contrast,
@@ -453,8 +465,8 @@ const DotsPage: React.FC = () => {
             showOriginalBackground,
             applyGradingToOriginal,
             frameRate,
-            displayWidth,
-            displayHeight: displayWidth / sourceAspectRatio,
+            displayWidth: display.width,
+            displayHeight: display.height,
         };
         if (currentFile) {
             return { settings, source: { kind: 'image', file: currentFile, pixelData }, customBg: customBgElement };
@@ -521,6 +533,7 @@ const DotsPage: React.FC = () => {
                 onShowDotsToggle={() => setShowDots(v => !v)}
                 useGPU={renderer === 'gpu'}
                 onUseGPUToggle={() => setRenderer(r => (r === 'gpu' ? 'p5' : 'gpu'))}
+                gpuUnavailable={gpuUnavailable}
                 applyGradingToOriginal={applyGradingToOriginal}
                 onApplyGradingToOriginalToggle={() => setApplyGradingToOriginal(v => !v)}
                 hasCustomBg={hasCustomBg}
@@ -550,6 +563,7 @@ const DotsPage: React.FC = () => {
                 videoElement={isStreamingVideo ? videoElement : null}
                 renderer={renderer}
                 paused={isExporting}
+                onGPUUnavailable={handleGPUUnavailable}
                 className="dots-canvas"
             />
         </div>

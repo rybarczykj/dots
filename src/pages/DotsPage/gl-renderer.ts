@@ -132,6 +132,8 @@ export class DotsGLRenderer {
     private colorBuffer: WebGLBuffer;
     private bgTexture: WebGLTexture;
     private uniforms: Record<string, WebGLUniformLocation | null>;
+    private maxTextureSize: number;
+    private fitCanvas: HTMLCanvasElement | null = null;
 
     constructor(canvas: HTMLCanvasElement) {
         const gl = canvas.getContext('webgl2', {
@@ -194,6 +196,7 @@ export class DotsGLRenderer {
         }
         this.uniforms.uTex = gl.getUniformLocation(this.bgProgram, 'uTex');
         this.uniforms.uUvScale = gl.getUniformLocation(this.bgProgram, 'uUvScale');
+        this.maxTextureSize = gl.getParameter(gl.MAX_TEXTURE_SIZE);
     }
 
     render(opts: {
@@ -226,7 +229,7 @@ export class DotsGLRenderer {
             gl.activeTexture(gl.TEXTURE0);
             gl.bindTexture(gl.TEXTURE_2D, this.bgTexture);
             gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
-            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, opts.background);
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, this.fitToTexture(opts.background));
             gl.uniform1i(this.uniforms.uTex, 0);
             // Background spans the untruncated size; the viewport may crop its edge
             gl.uniform2f(this.uniforms.uUvScale, pxWidth / opts.dpr / opts.width, pxHeight / opts.dpr / opts.height);
@@ -255,11 +258,42 @@ export class DotsGLRenderer {
         gl.bindVertexArray(null);
     }
 
+    /**
+     * Sources larger than the GPU's max texture size fail to upload and sample black,
+     * so shrink them to fit first (a 2D canvas has no such limit).
+     */
+    private fitToTexture(source: GLBackgroundSource): GLBackgroundSource {
+        const [width, height] =
+            source instanceof HTMLVideoElement
+                ? [source.videoWidth, source.videoHeight]
+                : source instanceof HTMLImageElement
+                ? [source.naturalWidth, source.naturalHeight]
+                : typeof VideoFrame !== 'undefined' && source instanceof VideoFrame
+                ? [source.displayWidth, source.displayHeight]
+                : [source.width, source.height];
+        const scale = Math.min(1, this.maxTextureSize / Math.max(width, height));
+        if (scale >= 1) return source;
+        this.fitCanvas ??= document.createElement('canvas');
+        this.fitCanvas.width = Math.floor(width * scale);
+        this.fitCanvas.height = Math.floor(height * scale);
+        this.fitCanvas.getContext('2d')!.drawImage(source as CanvasImageSource, 0, 0, this.fitCanvas.width, this.fitCanvas.height);
+        return this.fitCanvas;
+    }
+
     /** Throws if the last render didn't make it (GPU out of memory or context lost) */
     assertRendered() {
         const { gl } = this;
-        if (gl.isContextLost() || gl.getError() === gl.OUT_OF_MEMORY) {
+        if (gl.isContextLost()) {
+            throw new Error('GPU reset during export. Try again, or try a smaller size.');
+        }
+        // getError returns one queued error per call; drain them all
+        const errors = new Set<number>();
+        for (let e = gl.getError(); e !== gl.NO_ERROR && errors.size < 8; e = gl.getError()) errors.add(e);
+        if (errors.has(gl.OUT_OF_MEMORY)) {
             throw new Error('GPU ran out of memory at this size. Try a smaller size.');
+        }
+        if (errors.size > 0) {
+            throw new Error(`GPU render failed (error ${Array.from(errors).join(', ')}). Try a smaller size.`);
         }
         const canvas = gl.canvas as HTMLCanvasElement;
         if (gl.drawingBufferWidth !== canvas.width || gl.drawingBufferHeight !== canvas.height) {

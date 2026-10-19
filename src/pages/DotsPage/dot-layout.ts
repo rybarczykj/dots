@@ -10,6 +10,16 @@ export type ShapeName = (typeof SHAPE_NAMES)[number];
 // Extract shape name from format like "● circle"
 export const getShapeName = (shape: DotShape): ShapeName => shape.split(' ')[1] as ShapeName;
 
+/**
+ * On-screen canvas size in CSS pixels: 1000*zoom wide, height from the source's
+ * aspect ratio (stable per source, so it doesn't jitter with resolution).
+ * Export scales this up, so the live canvas and export must both use it.
+ */
+export const getDisplaySize = (zoom: number, sourceAspectRatio: number | null) => {
+    const width = 1000 * zoom;
+    return { width, height: sourceAspectRatio ? width / sourceAspectRatio : width };
+};
+
 export interface DotLayoutParams {
     minDotSize: number;
     maxDotSize: number;

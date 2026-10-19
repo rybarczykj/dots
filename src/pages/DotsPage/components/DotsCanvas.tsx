@@ -2,7 +2,7 @@ import React from 'react';
 import Sketch from 'react-p5';
 import { ProcessedPixelData } from '../dots-utils';
 import { DotShape } from './DotsMenu';
-import { computeDotLayout, DotLayout, getShapeName, ShapeName } from '../dot-layout';
+import { computeDotLayout, DotLayout, getDisplaySize, getShapeName, ShapeName } from '../dot-layout';
 import { DotsGLRenderer } from '../gl-renderer';
 import { createBackgroundPicker } from '../background';
 
@@ -32,6 +32,8 @@ interface DotsCanvasProps {
     renderer: DotsRenderer;
     /** Stop continuous redraws (e.g. while exporting) */
     paused: boolean;
+    /** Called when WebGL2 can't be used, so the page can fall back to p5 */
+    onGPUUnavailable: () => void;
     className?: string;
 }
 
@@ -95,6 +97,7 @@ export const DotsCanvas: React.FC<DotsCanvasProps> = ({
     videoElement,
     renderer,
     paused,
+    onGPUUnavailable,
     className,
 }) => {
     const p5Ref = React.useRef<P5Instance | null>(null);
@@ -105,12 +108,9 @@ export const DotsCanvas: React.FC<DotsCanvasProps> = ({
     const backgroundImageRef = React.useRef<HTMLImageElement | null>(null);
     const lastSourceUrlRef = React.useRef<string | null>(null);
 
-    // Lock canvas to a fixed size (1000*zoom wide, height from stable aspect ratio).
-    // dotSpacing is derived from pixelData.width so canvas width = 1000*zoom exactly.
-    // Canvas height uses the source aspect ratio (set once per source) to avoid rounding
-    // jitter from integer pixelData dimensions at different resolutions.
-    const targetWidth = 1000 * zoom;
-    const targetHeight = sourceAspectRatio ? targetWidth / sourceAspectRatio : targetWidth;
+    // Lock canvas to a fixed size. dotSpacing is derived from pixelData.width so
+    // canvas width = 1000*zoom exactly.
+    const { width: targetWidth, height: targetHeight } = getDisplaySize(zoom, sourceAspectRatio);
     const dotSpacing = pixelData ? targetWidth / pixelData.width : (1000 / resolution) * zoom;
 
     // Refs so draw() always sees latest props (react-p5 can invoke a stale draw on redraw())
@@ -131,6 +131,7 @@ export const DotsCanvas: React.FC<DotsCanvasProps> = ({
         customBgElement,
         videoElement,
         renderer,
+        onGPUUnavailable,
     });
     drawParamsRef.current = {
         pixelData,
@@ -149,6 +150,7 @@ export const DotsCanvas: React.FC<DotsCanvasProps> = ({
         customBgElement,
         videoElement,
         renderer,
+        onGPUUnavailable,
     };
 
     // Load background image when sourceFile changes
@@ -206,6 +208,7 @@ export const DotsCanvas: React.FC<DotsCanvasProps> = ({
                 glRendererRef.current = new DotsGLRenderer(canvas);
             } catch (error) {
                 console.error('GPU renderer unavailable:', error);
+                drawParamsRef.current.onGPUUnavailable();
                 return;
             }
         }
@@ -234,10 +237,24 @@ export const DotsCanvas: React.FC<DotsCanvasProps> = ({
     // Release the GL context when switching back to p5 or unmounting
     React.useEffect(() => {
         if (renderer !== 'gpu') return;
+        // The p5 sketch unmounts; don't redraw its removed instance later
+        p5Ref.current = null;
+        const canvas = glCanvasRef.current;
+        // A lost context (driver reset, GPU memory pressure) is recreated on restore
+        const onLost = (e: Event) => {
+            e.preventDefault();
+            glRendererRef.current = null;
+        };
+        const onRestored = () => renderGL();
+        canvas?.addEventListener('webglcontextlost', onLost);
+        canvas?.addEventListener('webglcontextrestored', onRestored);
         return () => {
+            canvas?.removeEventListener('webglcontextlost', onLost);
+            canvas?.removeEventListener('webglcontextrestored', onRestored);
             glRendererRef.current?.dispose();
             glRendererRef.current = null;
         };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [renderer]);
 
     // Force redraw when any visual setting changes
