@@ -1,0 +1,258 @@
+// WebGL2 dot renderer: one instanced draw call for all dots. Each dot is a quad
+// whose fragment shader evaluates the shape's signed distance field, so shape
+// geometry here must mirror drawShape() in DotsCanvas.tsx. Instances draw in
+// row-major order, so overlapping dots stack exactly like the p5 renderer.
+import { DotLayout, SHAPE_NAMES, ShapeName } from './dot-layout';
+
+const DOTS_VS = `#version 300 es
+in vec2 aCorner;
+in float aSize;
+in vec4 aColor;
+uniform vec2 uCanvas;
+uniform float uSpacing;
+uniform int uCols;
+uniform float uDpr;
+out vec2 vLocal;
+out float vSize;
+out vec4 vColor;
+void main() {
+    if (aSize <= 0.0) {
+        gl_Position = vec4(2.0, 2.0, 0.0, 1.0);
+        return;
+    }
+    vec2 cell = vec2(float(gl_InstanceID % uCols), float(gl_InstanceID / uCols));
+    vec2 center = cell * uSpacing + uSpacing * 0.5;
+    // Pad by one device pixel so antialiased edges aren't clipped
+    vec2 local = aCorner * (aSize * 0.5 + 1.0 / uDpr);
+    vec2 pos = center + local;
+    vLocal = local;
+    vSize = aSize;
+    vColor = aColor;
+    gl_Position = vec4(pos.x / uCanvas.x * 2.0 - 1.0, 1.0 - pos.y / uCanvas.y * 2.0, 0.0, 1.0);
+}`;
+
+const DOTS_FS = `#version 300 es
+precision highp float;
+in vec2 vLocal;
+in float vSize;
+in vec4 vColor;
+uniform int uShape;
+uniform float uDpr;
+out vec4 outColor;
+
+float sdBox(vec2 p, vec2 b) {
+    vec2 d = abs(p) - b;
+    return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0);
+}
+
+float sdTriangle(vec2 p, vec2 p0, vec2 p1, vec2 p2) {
+    vec2 e0 = p1 - p0, e1 = p2 - p1, e2 = p0 - p2;
+    vec2 v0 = p - p0, v1 = p - p1, v2 = p - p2;
+    vec2 pq0 = v0 - e0 * clamp(dot(v0, e0) / dot(e0, e0), 0.0, 1.0);
+    vec2 pq1 = v1 - e1 * clamp(dot(v1, e1) / dot(e1, e1), 0.0, 1.0);
+    vec2 pq2 = v2 - e2 * clamp(dot(v2, e2) / dot(e2, e2), 0.0, 1.0);
+    float s = sign(e0.x * e2.y - e0.y * e2.x);
+    vec2 d = min(min(vec2(dot(pq0, pq0), s * (v0.x * e0.y - v0.y * e0.x)),
+                     vec2(dot(pq1, pq1), s * (v1.x * e1.y - v1.y * e1.x))),
+                     vec2(dot(pq2, pq2), s * (v2.x * e2.y - v2.y * e2.x)));
+    return -sqrt(d.x) * sign(d.y);
+}
+
+void main() {
+    vec2 p = vLocal;
+    float s = vSize;
+    float h = s * 0.5;
+    float d;
+    if (uShape == 0) {
+        d = length(p) - h;
+    } else if (uShape == 1) {
+        d = sdBox(p, vec2(h));
+    } else if (uShape == 2) {
+        // Square of side 0.7*size rotated 45 degrees
+        vec2 q = vec2(p.x + p.y, p.y - p.x) * 0.70710678;
+        d = sdBox(q, vec2(s * 0.35));
+    } else if (uShape == 3) {
+        d = sdTriangle(p, vec2(0.0, -h), vec2(-h, h * 0.6), vec2(h, h * 0.6));
+    } else if (uShape == 4) {
+        d = min(sdBox(p, vec2(h, s * 0.15)), sdBox(p, vec2(s * 0.15, h)));
+    } else {
+        // Stroke of weight 0.15*size on a circle of diameter 0.85*size
+        d = abs(length(p) - s * 0.425) - s * 0.075;
+    }
+    float alpha = clamp(0.5 - d * uDpr, 0.0, 1.0);
+    if (alpha <= 0.0) discard;
+    outColor = vec4(vColor.rgb * alpha, alpha);
+}`;
+
+const BG_VS = `#version 300 es
+in vec2 aCorner;
+uniform vec2 uUvScale;
+out vec2 vUv;
+void main() {
+    vUv = vec2(aCorner.x * 0.5 + 0.5, 0.5 - aCorner.y * 0.5) * uUvScale;
+    gl_Position = vec4(aCorner, 0.0, 1.0);
+}`;
+
+const BG_FS = `#version 300 es
+precision highp float;
+in vec2 vUv;
+uniform sampler2D uTex;
+out vec4 outColor;
+void main() {
+    outColor = vec4(texture(uTex, vUv).rgb, 1.0);
+}`;
+
+export type GLBackgroundSource = TexImageSource;
+
+const compile = (gl: WebGL2RenderingContext, vs: string, fs: string): WebGLProgram => {
+    const program = gl.createProgram()!;
+    for (const [type, src] of [[gl.VERTEX_SHADER, vs], [gl.FRAGMENT_SHADER, fs]] as const) {
+        const shader = gl.createShader(type)!;
+        gl.shaderSource(shader, src);
+        gl.compileShader(shader);
+        if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+            throw new Error('Shader compile failed: ' + gl.getShaderInfoLog(shader));
+        }
+        gl.attachShader(program, shader);
+    }
+    gl.linkProgram(program);
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+        throw new Error('Program link failed: ' + gl.getProgramInfoLog(program));
+    }
+    return program;
+};
+
+export class DotsGLRenderer {
+    private gl: WebGL2RenderingContext;
+    private dotsProgram: WebGLProgram;
+    private bgProgram: WebGLProgram;
+    private dotsVao: WebGLVertexArrayObject;
+    private bgVao: WebGLVertexArrayObject;
+    private sizeBuffer: WebGLBuffer;
+    private colorBuffer: WebGLBuffer;
+    private bgTexture: WebGLTexture;
+    private uniforms: Record<string, WebGLUniformLocation | null>;
+
+    constructor(canvas: HTMLCanvasElement) {
+        const gl = canvas.getContext('webgl2', {
+            alpha: false,
+            antialias: false,
+            premultipliedAlpha: true,
+            preserveDrawingBuffer: true,
+        });
+        if (!gl) throw new Error('WebGL2 not available');
+        this.gl = gl;
+
+        this.dotsProgram = compile(gl, DOTS_VS, DOTS_FS);
+        this.bgProgram = compile(gl, BG_VS, BG_FS);
+
+        const quad = gl.createBuffer()!;
+        gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+
+        // Dots: shared quad corners + per-instance size and color
+        this.dotsVao = gl.createVertexArray()!;
+        gl.bindVertexArray(this.dotsVao);
+        const dCorner = gl.getAttribLocation(this.dotsProgram, 'aCorner');
+        gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+        gl.enableVertexAttribArray(dCorner);
+        gl.vertexAttribPointer(dCorner, 2, gl.FLOAT, false, 0, 0);
+
+        this.sizeBuffer = gl.createBuffer()!;
+        const aSize = gl.getAttribLocation(this.dotsProgram, 'aSize');
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.sizeBuffer);
+        gl.enableVertexAttribArray(aSize);
+        gl.vertexAttribPointer(aSize, 1, gl.FLOAT, false, 0, 0);
+        gl.vertexAttribDivisor(aSize, 1);
+
+        this.colorBuffer = gl.createBuffer()!;
+        const aColor = gl.getAttribLocation(this.dotsProgram, 'aColor');
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.colorBuffer);
+        gl.enableVertexAttribArray(aColor);
+        gl.vertexAttribPointer(aColor, 4, gl.UNSIGNED_BYTE, true, 0, 0);
+        gl.vertexAttribDivisor(aColor, 1);
+
+        // Background: full-canvas quad
+        this.bgVao = gl.createVertexArray()!;
+        gl.bindVertexArray(this.bgVao);
+        const bCorner = gl.getAttribLocation(this.bgProgram, 'aCorner');
+        gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+        gl.enableVertexAttribArray(bCorner);
+        gl.vertexAttribPointer(bCorner, 2, gl.FLOAT, false, 0, 0);
+        gl.bindVertexArray(null);
+
+        this.bgTexture = gl.createTexture()!;
+        gl.bindTexture(gl.TEXTURE_2D, this.bgTexture);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+        this.uniforms = {};
+        for (const name of ['uCanvas', 'uSpacing', 'uCols', 'uDpr', 'uShape']) {
+            this.uniforms[name] = gl.getUniformLocation(this.dotsProgram, name);
+        }
+        this.uniforms.uTex = gl.getUniformLocation(this.bgProgram, 'uTex');
+        this.uniforms.uUvScale = gl.getUniformLocation(this.bgProgram, 'uUvScale');
+    }
+
+    render(opts: {
+        width: number;
+        height: number;
+        dpr: number;
+        background: GLBackgroundSource | null;
+        layout: DotLayout | null;
+        shape: ShapeName;
+    }) {
+        const { gl } = this;
+        const canvas = gl.canvas as HTMLCanvasElement;
+        // Truncate like a 2D canvas (and p5) does with fractional sizes
+        const pxWidth = Math.floor(opts.width * opts.dpr);
+        const pxHeight = Math.floor(opts.height * opts.dpr);
+        if (canvas.width !== pxWidth || canvas.height !== pxHeight) {
+            canvas.width = pxWidth;
+            canvas.height = pxHeight;
+        }
+        gl.viewport(0, 0, pxWidth, pxHeight);
+        gl.clearColor(1, 1, 1, 1);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+
+        if (opts.background) {
+            gl.disable(gl.BLEND);
+            gl.useProgram(this.bgProgram);
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, this.bgTexture);
+            gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, opts.background);
+            gl.uniform1i(this.uniforms.uTex, 0);
+            // Background spans the untruncated size; the viewport may crop its edge
+            gl.uniform2f(this.uniforms.uUvScale, pxWidth / opts.dpr / opts.width, pxHeight / opts.dpr / opts.height);
+            gl.bindVertexArray(this.bgVao);
+            gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+        }
+
+        const layout = opts.layout;
+        if (layout && layout.sizes.length > 0) {
+            gl.enable(gl.BLEND);
+            gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+            gl.useProgram(this.dotsProgram);
+            gl.bindBuffer(gl.ARRAY_BUFFER, this.sizeBuffer);
+            gl.bufferData(gl.ARRAY_BUFFER, layout.sizes, gl.DYNAMIC_DRAW);
+            gl.bindBuffer(gl.ARRAY_BUFFER, this.colorBuffer);
+            gl.bufferData(gl.ARRAY_BUFFER, layout.colors, gl.DYNAMIC_DRAW);
+            // Viewport size in CSS px, so 1 unit = dpr device pixels even after truncation
+            gl.uniform2f(this.uniforms.uCanvas, pxWidth / opts.dpr, pxHeight / opts.dpr);
+            gl.uniform1f(this.uniforms.uSpacing, layout.dotSpacing);
+            gl.uniform1i(this.uniforms.uCols, layout.cols);
+            gl.uniform1f(this.uniforms.uDpr, opts.dpr);
+            gl.uniform1i(this.uniforms.uShape, SHAPE_NAMES.indexOf(opts.shape));
+            gl.bindVertexArray(this.dotsVao);
+            gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, layout.sizes.length);
+        }
+        gl.bindVertexArray(null);
+    }
+
+    dispose() {
+        this.gl.getExtension('WEBGL_lose_context')?.loseContext();
+    }
+}

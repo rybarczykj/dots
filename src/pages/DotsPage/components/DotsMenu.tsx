@@ -54,6 +54,8 @@ interface DotsMenuProps {
     onShowOriginalBackgroundToggle: () => void;
     showDots: boolean;
     onShowDotsToggle: () => void;
+    useGPU: boolean;
+    onUseGPUToggle: () => void;
     applyGradingToOriginal: boolean;
     onApplyGradingToOriginalToggle: () => void;
     hasCustomBg: boolean;
@@ -100,6 +102,8 @@ export const DotsMenu = ({
     onShowOriginalBackgroundToggle,
     showDots,
     onShowDotsToggle,
+    useGPU,
+    onUseGPUToggle,
     applyGradingToOriginal,
     onApplyGradingToOriginalToggle,
     hasCustomBg,
@@ -122,17 +126,7 @@ export const DotsMenu = ({
         canvas.height = pixelData.height;
         const ctx = canvas.getContext('2d');
         if (!ctx) return;
-        const imageData = ctx.createImageData(pixelData.width, pixelData.height);
-        for (let y = 0; y < pixelData.height; y++) {
-            for (let x = 0; x < pixelData.width; x++) {
-                const px = pixelData.pixels[y][x];
-                const i = (y * pixelData.width + x) * 4;
-                imageData.data[i] = px.r;
-                imageData.data[i + 1] = px.g;
-                imageData.data[i + 2] = px.b;
-                imageData.data[i + 3] = 255;
-            }
-        }
+        const imageData = new ImageData(pixelData.pixels, pixelData.width, pixelData.height);
         ctx.putImageData(imageData, 0, 0);
     }, [pixelData, isColorGradingOpen]);
     const imageUploadHandler = (imageFile: File) => {
@@ -225,6 +219,12 @@ export const DotsMenu = ({
                             step={0.1}
                             onChange={(newZoom) => onSpecsChange({ ...specs, zoom: newZoom })}
                         />
+                        <div className="checkboxes">
+                            <label>
+                                <input type="checkbox" checked={useGPU} onChange={onUseGPUToggle} />
+                                {'gpu renderer?'}
+                            </label>
+                        </div>
                     </div>
 
                     <div className="control-section">

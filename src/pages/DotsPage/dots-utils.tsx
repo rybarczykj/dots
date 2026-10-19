@@ -7,16 +7,17 @@ export { getGreyscale, getColors, getRawColors, resizeImage };
 export { applyBrightness, applyContrast, applyGamma, calculateLuminance };
 
 export interface ProcessedPixelData {
-    pixels: { r: number; g: number; b: number }[][];
-    /** Original unmodified colors (before contrast/brightness/inversion) */
-    originalPixels: { r: number; g: number; b: number }[][];
+    /** Graded colors, RGBA row-major (alpha always 255) */
+    pixels: Uint8ClampedArray;
+    /** Original unmodified colors (before contrast/brightness/inversion), RGBA row-major */
+    originalPixels: Uint8ClampedArray;
     width: number;
     height: number;
 }
 
 /**
  * Process image data for dots rendering
- * Returns a 2D array of RGB values with contrast, brightness, and gamma applied
+ * Returns RGBA buffers with contrast, brightness, and gamma applied
  */
 export const processImageForDots = (
     imageData: ImageData,
@@ -26,64 +27,52 @@ export const processImageForDots = (
     isColorInverted: boolean,
     useColors: boolean
 ): ProcessedPixelData => {
-    const pixels = imageData.data;
     const width = imageData.width;
     const height = imageData.height;
-    const result: { r: number; g: number; b: number }[][] = [];
-    const originalResult: { r: number; g: number; b: number }[][] = [];
+    const originalPixels = new Uint8ClampedArray(imageData.data);
+    const result = new Uint8ClampedArray(width * height * 4);
 
-    for (let y = 0; y < height; y++) {
-        const row: { r: number; g: number; b: number }[] = [];
-        const originalRow: { r: number; g: number; b: number }[] = [];
-        for (let x = 0; x < width; x++) {
-            const pixelIndex = (y * width + x) * 4;
-            const origR = pixels[pixelIndex];
-            const origG = pixels[pixelIndex + 1];
-            const origB = pixels[pixelIndex + 2];
-            
-            // Store original colors
-            originalRow.push({ r: origR, g: origG, b: origB });
-            
-            let r = origR;
-            let g = origG;
-            let b = origB;
+    for (let i = 0; i < result.length; i += 4) {
+        let r = originalPixels[i];
+        let g = originalPixels[i + 1];
+        let b = originalPixels[i + 2];
+        originalPixels[i + 3] = 255;
 
-            if (useColors) {
-                // Apply adjustments to each channel: brightness → contrast → gamma
-                const luminance = calculateLuminance(r, g, b);
-                const adjustedLuminance = applyGamma(
-                    applyContrast(applyBrightness(luminance, brightness), contrast),
-                    gamma
-                );
-                
-                // Scale RGB values by the luminance adjustment factor
-                const factor = luminance > 0 ? adjustedLuminance / luminance : 1;
-                r = Math.min(255, Math.max(0, Math.round(r * factor)));
-                g = Math.min(255, Math.max(0, Math.round(g * factor)));
-                b = Math.min(255, Math.max(0, Math.round(b * factor)));
+        if (useColors) {
+            // Apply adjustments to each channel: brightness → contrast → gamma
+            const luminance = calculateLuminance(r, g, b);
+            const adjustedLuminance = applyGamma(
+                applyContrast(applyBrightness(luminance, brightness), contrast),
+                gamma
+            );
 
-                if (isColorInverted) {
-                    r = 255 - r;
-                    g = 255 - g;
-                    b = 255 - b;
-                }
-            } else {
-                // Greyscale mode: brightness → contrast → gamma
-                const luminance = calculateLuminance(r, g, b);
-                const adjustedLuminance = applyGamma(
-                    applyContrast(applyBrightness(luminance, brightness), contrast),
-                    gamma
-                );
-                const grey = isColorInverted ? 255 - adjustedLuminance : adjustedLuminance;
-                r = g = b = Math.round(grey);
+            // Scale RGB values by the luminance adjustment factor
+            const factor = luminance > 0 ? adjustedLuminance / luminance : 1;
+            r = Math.min(255, Math.max(0, Math.round(r * factor)));
+            g = Math.min(255, Math.max(0, Math.round(g * factor)));
+            b = Math.min(255, Math.max(0, Math.round(b * factor)));
+
+            if (isColorInverted) {
+                r = 255 - r;
+                g = 255 - g;
+                b = 255 - b;
             }
-
-            row.push({ r, g, b });
+        } else {
+            // Greyscale mode: brightness → contrast → gamma
+            const luminance = calculateLuminance(r, g, b);
+            const adjustedLuminance = applyGamma(
+                applyContrast(applyBrightness(luminance, brightness), contrast),
+                gamma
+            );
+            const grey = isColorInverted ? 255 - adjustedLuminance : adjustedLuminance;
+            r = g = b = Math.round(grey);
         }
-        result.push(row);
-        originalResult.push(originalRow);
+
+        result[i] = r;
+        result[i + 1] = g;
+        result[i + 2] = b;
+        result[i + 3] = 255;
     }
 
-    return { pixels: result, originalPixels: originalResult, width, height };
+    return { pixels: result, originalPixels, width, height };
 };
-

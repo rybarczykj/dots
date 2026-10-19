@@ -2,6 +2,10 @@ import React from 'react';
 import Sketch from 'react-p5';
 import { ProcessedPixelData } from '../dots-utils';
 import { DotShape } from './DotsMenu';
+import { computeDotLayout, DotLayout, getShapeName, ShapeName } from '../dot-layout';
+import { DotsGLRenderer } from '../gl-renderer';
+
+export type DotsRenderer = 'p5' | 'gpu';
 
 // Using 'any' for p5 types due to react-p5 using older @types/p5 version
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -24,16 +28,14 @@ interface DotsCanvasProps {
     customBgElement: HTMLVideoElement | HTMLImageElement | null;
     sourceFile: File | null;
     videoElement: HTMLVideoElement | null;
+    renderer: DotsRenderer;
     className?: string;
 }
 
-// Helper to draw different shapes
-const drawShape = (p5: P5Instance, shape: DotShape, x: number, y: number, size: number) => {
+// Helper to draw different shapes. Geometry is mirrored by the GPU shader in gl-renderer.ts
+const drawShape = (p5: P5Instance, shapeName: ShapeName, x: number, y: number, size: number) => {
     const half = size / 2;
-    
-    // Extract shape name from format like "● circle"
-    const shapeName = shape.split(' ')[1];
-    
+
     switch (shapeName) {
         case 'circle':
             p5.circle(x, y, size);
@@ -88,9 +90,14 @@ export const DotsCanvas: React.FC<DotsCanvasProps> = ({
     customBgElement,
     sourceFile,
     videoElement,
+    renderer,
     className,
 }) => {
     const p5Ref = React.useRef<P5Instance | null>(null);
+    const glCanvasRef = React.useRef<HTMLCanvasElement | null>(null);
+    const glRendererRef = React.useRef<DotsGLRenderer | null>(null);
+    const layoutRef = React.useRef<DotLayout | null>(null);
+    const gradedBgRef = React.useRef<{ source: ProcessedPixelData; canvas: HTMLCanvasElement } | null>(null);
     const backgroundImageRef = React.useRef<HTMLImageElement | null>(null);
     const lastSourceUrlRef = React.useRef<string | null>(null);
 
@@ -119,6 +126,7 @@ export const DotsCanvas: React.FC<DotsCanvasProps> = ({
         showDots,
         customBgElement,
         videoElement,
+        renderer,
     });
     drawParamsRef.current = {
         pixelData,
@@ -136,6 +144,7 @@ export const DotsCanvas: React.FC<DotsCanvasProps> = ({
         showDots,
         customBgElement,
         videoElement,
+        renderer,
     };
 
     // Load background image when sourceFile changes
@@ -145,9 +154,7 @@ export const DotsCanvas: React.FC<DotsCanvasProps> = ({
             const img = new Image();
             img.onload = () => {
                 backgroundImageRef.current = img;
-                if (p5Ref.current) {
-                    p5Ref.current.redraw();
-                }
+                requestRender();
             };
             img.src = url;
             
@@ -163,26 +170,109 @@ export const DotsCanvas: React.FC<DotsCanvasProps> = ({
         } else {
             backgroundImageRef.current = null;
         }
+        // requestRender reads latest state from drawParamsRef
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [sourceFile, showOriginalBackground]);
+
+    // Background shown beneath the dots, or null for plain white
+    const getBackgroundSource = (): HTMLCanvasElement | HTMLVideoElement | HTMLImageElement | null => {
+        const params = drawParamsRef.current;
+        if (params.customBgElement) {
+            if (params.customBgElement instanceof HTMLVideoElement) {
+                return params.customBgElement.readyState >= 2 ? params.customBgElement : null;
+            }
+            return params.customBgElement;
+        }
+        if (!params.showOriginalBackground) return null;
+        if (params.applyGradingToOriginal && params.pixelData) {
+            // Processed pixelData as background (color grading applied), cached per frame
+            if (gradedBgRef.current?.source !== params.pixelData) {
+                const canvas = gradedBgRef.current?.canvas ?? document.createElement('canvas');
+                canvas.width = params.pixelData.width;
+                canvas.height = params.pixelData.height;
+                canvas.getContext('2d')!.putImageData(
+                    new ImageData(params.pixelData.pixels, params.pixelData.width, params.pixelData.height),
+                    0,
+                    0
+                );
+                gradedBgRef.current = { source: params.pixelData, canvas };
+            }
+            return gradedBgRef.current.canvas;
+        }
+        if (params.videoElement && params.videoElement.readyState >= 2) return params.videoElement;
+        return backgroundImageRef.current;
+    };
+
+    const getLayout = (): DotLayout | null => {
+        const params = drawParamsRef.current;
+        if (!params.pixelData || !params.showDots) return null;
+        layoutRef.current = computeDotLayout(params.pixelData, params, layoutRef.current);
+        return layoutRef.current;
+    };
+
+    const renderGL = () => {
+        const params = drawParamsRef.current;
+        const canvas = glCanvasRef.current;
+        if (!canvas) return;
+        if (!glRendererRef.current) {
+            try {
+                glRendererRef.current = new DotsGLRenderer(canvas);
+            } catch (error) {
+                console.error('GPU renderer unavailable:', error);
+                return;
+            }
+        }
+        const width = params.pixelData ? params.targetWidth : 0;
+        const height = params.pixelData ? params.targetHeight : 0;
+        canvas.style.width = `${width}px`;
+        canvas.style.height = `${height}px`;
+        glRendererRef.current.render({
+            width,
+            height,
+            dpr: window.devicePixelRatio || 1,
+            background: params.pixelData ? getBackgroundSource() : null,
+            layout: getLayout(),
+            shape: getShapeName(params.shape),
+        });
+    };
+
+    const requestRender = () => {
+        if (drawParamsRef.current.renderer === 'gpu') {
+            renderGL();
+        } else if (p5Ref.current) {
+            p5Ref.current.redraw();
+        }
+    };
+
+    // Release the GL context when switching back to p5 or unmounting
+    React.useEffect(() => {
+        if (renderer !== 'gpu') return;
+        return () => {
+            glRendererRef.current?.dispose();
+            glRendererRef.current = null;
+        };
+    }, [renderer]);
 
     // Force redraw when any visual setting changes
     React.useEffect(() => {
-        if (p5Ref.current && pixelData) {
-            p5Ref.current.redraw();
+        if (pixelData || renderer === 'gpu') {
+            requestRender();
         }
-    }, [pixelData, zoom, resolution, dotSpacing, minDotSize, maxDotSize, shape, forceOGColors, removeWhite, whitePoint, showOriginalBackground, applyGradingToOriginal, showDots, customBgElement]);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [pixelData, zoom, resolution, dotSpacing, minDotSize, maxDotSize, shape, forceOGColors, removeWhite, whitePoint, showOriginalBackground, applyGradingToOriginal, showDots, customBgElement, renderer]);
 
     // Continuous redraw loop for custom video backgrounds
     React.useEffect(() => {
         if (!customBgElement || !(customBgElement instanceof HTMLVideoElement)) return;
         let rafId: number;
         const loop = () => {
-            if (p5Ref.current) p5Ref.current.redraw();
+            requestRender();
             rafId = requestAnimationFrame(loop);
         };
         rafId = requestAnimationFrame(loop);
         return () => cancelAnimationFrame(rafId);
-    }, [customBgElement]);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [customBgElement, renderer]);
 
     const setup = (p5: P5Instance, canvasParentRef: Element) => {
         p5Ref.current = p5;
@@ -200,6 +290,10 @@ export const DotsCanvas: React.FC<DotsCanvasProps> = ({
 
     const draw = (p5: P5Instance) => {
         const params = drawParamsRef.current;
+        // Resize first: resizeCanvas clears to transparent
+        if (params.pixelData && (p5.width !== params.targetWidth || p5.height !== params.targetHeight)) {
+            p5.resizeCanvas(params.targetWidth, params.targetHeight);
+        }
         p5.background(255);
         p5.noStroke();
 
@@ -207,85 +301,43 @@ export const DotsCanvas: React.FC<DotsCanvasProps> = ({
             return;
         }
 
-        const maxPossibleSize = params.dotSpacing * 0.95;
-        if (p5.width !== params.targetWidth || p5.height !== params.targetHeight) {
-            p5.resizeCanvas(params.targetWidth, params.targetHeight);
-        }
-
-        // Draw custom background (no FX)
-        if (params.customBgElement) {
+        const background = getBackgroundSource();
+        if (background) {
             const ctx = p5.drawingContext as CanvasRenderingContext2D;
-            if (params.customBgElement instanceof HTMLVideoElement && params.customBgElement.readyState >= 2) {
-                ctx.drawImage(params.customBgElement, 0, 0, params.targetWidth, params.targetHeight);
-            } else if (params.customBgElement instanceof HTMLImageElement) {
-                ctx.drawImage(params.customBgElement, 0, 0, params.targetWidth, params.targetHeight);
-            }
+            ctx.imageSmoothingEnabled = true;
+            ctx.drawImage(background, 0, 0, params.targetWidth, params.targetHeight);
         }
 
-        if (params.showOriginalBackground && !params.customBgElement) {
-            const ctx = p5.drawingContext as CanvasRenderingContext2D;
-            if (params.applyGradingToOriginal && params.pixelData) {
-                // Draw processed pixelData as background (color grading applied)
-                const tmpCanvas = document.createElement('canvas');
-                tmpCanvas.width = params.pixelData.width;
-                tmpCanvas.height = params.pixelData.height;
-                const tmpCtx = tmpCanvas.getContext('2d')!;
-                const imgData = tmpCtx.createImageData(params.pixelData.width, params.pixelData.height);
-                for (let y = 0; y < params.pixelData.height; y++) {
-                    for (let x = 0; x < params.pixelData.width; x++) {
-                        const px = params.pixelData.pixels[y][x];
-                        const i = (y * params.pixelData.width + x) * 4;
-                        imgData.data[i] = px.r;
-                        imgData.data[i + 1] = px.g;
-                        imgData.data[i + 2] = px.b;
-                        imgData.data[i + 3] = 255;
-                    }
-                }
-                tmpCtx.putImageData(imgData, 0, 0);
-                ctx.imageSmoothingEnabled = true;
-                ctx.drawImage(tmpCanvas, 0, 0, params.targetWidth, params.targetHeight);
-            } else if (params.videoElement && params.videoElement.readyState >= 2) {
-                ctx.drawImage(params.videoElement, 0, 0, params.targetWidth, params.targetHeight);
-            } else if (backgroundImageRef.current) {
-                ctx.drawImage(backgroundImageRef.current, 0, 0, params.targetWidth, params.targetHeight);
-            }
-        }
+        const layout = getLayout();
+        if (!layout) return;
 
-        if (!params.showDots) return;
-
-        for (let y = 0; y < params.pixelData.height; y++) {
-            for (let x = 0; x < params.pixelData.width; x++) {
-                const pixel = params.pixelData.pixels[y][x];
-                const colorPixel = params.forceOGColors ? params.pixelData.originalPixels[y][x] : pixel;
-
-                const brightness = (pixel.r + pixel.g + pixel.b) / (3 * 255);
-                const sizeMultiplier = params.minDotSize + (params.maxDotSize - params.minDotSize) * brightness;
-                const dotSize = maxPossibleSize * sizeMultiplier;
-
-                if (dotSize < 0.5) {
+        const shapeName = getShapeName(params.shape);
+        const isRing = shapeName === 'ring';
+        const { cols, rows, sizes, colors } = layout;
+        for (let y = 0; y < rows; y++) {
+            for (let x = 0; x < cols; x++) {
+                const i = y * cols + x;
+                const dotSize = sizes[i];
+                if (dotSize === 0) {
                     continue;
                 }
 
-                if (params.removeWhite) {
-                    const avgBrightness = (pixel.r + pixel.g + pixel.b) / 3;
-                    if (avgBrightness >= params.whitePoint) {
-                        continue;
-                    }
-                }
-
-                if (params.shape.includes('ring')) {
-                    p5.stroke(colorPixel.r, colorPixel.g, colorPixel.b);
+                const r = colors[i * 4];
+                const g = colors[i * 4 + 1];
+                const b = colors[i * 4 + 2];
+                if (isRing) {
+                    p5.stroke(r, g, b);
                     p5.noFill();
                 } else {
                     p5.noStroke();
-                    p5.fill(colorPixel.r, colorPixel.g, colorPixel.b);
+                    p5.fill(r, g, b);
                 }
 
                 drawShape(
                     p5,
-                    params.shape,
-                    x * params.dotSpacing + params.dotSpacing / 2,
-                    y * params.dotSpacing + params.dotSpacing / 2,
+                    shapeName,
+                    x * layout.dotSpacing + layout.dotSpacing / 2,
+                    y * layout.dotSpacing + layout.dotSpacing / 2,
                     dotSize
                 );
             }
@@ -294,7 +346,11 @@ export const DotsCanvas: React.FC<DotsCanvasProps> = ({
 
     return (
         <div className={className}>
-            <Sketch setup={setup} draw={draw} />
+            {renderer === 'gpu' ? (
+                <canvas ref={glCanvasRef} style={{ display: 'block' }} />
+            ) : (
+                <Sketch setup={setup} draw={draw} />
+            )}
         </div>
     );
 };

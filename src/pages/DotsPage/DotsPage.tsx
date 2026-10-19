@@ -3,7 +3,7 @@ import '../../index.css';
 import React from 'react';
 import { debounce } from 'lodash';
 import { DotsMenu, DotShape } from './components/DotsMenu';
-import { DotsCanvas } from './components/DotsCanvas';
+import { DotsCanvas, DotsRenderer } from './components/DotsCanvas';
 import { processImageForDots, ProcessedPixelData, resizeImage } from './dots-utils';
 import { SpecsState } from '../../shared/types';
 import { PRESETS, DotsPreset } from './presets';
@@ -110,6 +110,9 @@ const DotsPage: React.FC = () => {
 
     // Show dots overlay
     const [showDots, setShowDots] = React.useState(true);
+
+    // Rendering backend (opt-in GPU)
+    const [renderer, setRenderer] = React.useState<DotsRenderer>('p5');
 
     // Custom background (replaces "show original")
     const [customBgElement, setCustomBgElement] = React.useState<HTMLVideoElement | HTMLImageElement | null>(null);
@@ -473,6 +476,8 @@ const DotsPage: React.FC = () => {
                 onShowOriginalBackgroundToggle={() => setShowOriginalBackground(v => !v)}
                 showDots={showDots}
                 onShowDotsToggle={() => setShowDots(v => !v)}
+                useGPU={renderer === 'gpu'}
+                onUseGPUToggle={() => setRenderer(r => (r === 'gpu' ? 'p5' : 'gpu'))}
                 applyGradingToOriginal={applyGradingToOriginal}
                 onApplyGradingToOriginalToggle={() => setApplyGradingToOriginal(v => !v)}
                 hasCustomBg={hasCustomBg}
@@ -500,6 +505,7 @@ const DotsPage: React.FC = () => {
                 customBgElement={customBgElement}
                 sourceFile={currentFile}
                 videoElement={isStreamingVideo ? videoElement : null}
+                renderer={renderer}
                 className="dots-canvas"
             />
         </div>
