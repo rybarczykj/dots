@@ -258,3 +258,30 @@
   pointer-events: none;
   z-index: 200;
 }
+
+.export-panel {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  width: 160px;
+  z-index: 300;
+  font-size: 10px;
+  color: rgb(128, 128, 128);
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.export-panel-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 8px;
+  border: 1px solid #ccc;
+  background-color: hsla(0, 0%, 100%, 0.9);
+}
+
+.export-error {
+  color: rgb(190, 60, 60);
+}

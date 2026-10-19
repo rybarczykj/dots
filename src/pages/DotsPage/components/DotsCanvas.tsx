@@ -4,6 +4,7 @@ import { ProcessedPixelData } from '../dots-utils';
 import { DotShape } from './DotsMenu';
 import { computeDotLayout, DotLayout, getShapeName, ShapeName } from '../dot-layout';
 import { DotsGLRenderer } from '../gl-renderer';
+import { createBackgroundPicker } from '../background';
 
 export type DotsRenderer = 'p5' | 'gpu';
 
@@ -29,6 +30,8 @@ interface DotsCanvasProps {
     sourceFile: File | null;
     videoElement: HTMLVideoElement | null;
     renderer: DotsRenderer;
+    /** Stop continuous redraws (e.g. while exporting) */
+    paused: boolean;
     className?: string;
 }
 
@@ -91,13 +94,14 @@ export const DotsCanvas: React.FC<DotsCanvasProps> = ({
     sourceFile,
     videoElement,
     renderer,
+    paused,
     className,
 }) => {
     const p5Ref = React.useRef<P5Instance | null>(null);
     const glCanvasRef = React.useRef<HTMLCanvasElement | null>(null);
     const glRendererRef = React.useRef<DotsGLRenderer | null>(null);
     const layoutRef = React.useRef<DotLayout | null>(null);
-    const gradedBgRef = React.useRef<{ source: ProcessedPixelData; canvas: HTMLCanvasElement } | null>(null);
+    const pickBackgroundRef = React.useRef(createBackgroundPicker());
     const backgroundImageRef = React.useRef<HTMLImageElement | null>(null);
     const lastSourceUrlRef = React.useRef<string | null>(null);
 
@@ -175,32 +179,15 @@ export const DotsCanvas: React.FC<DotsCanvasProps> = ({
     }, [sourceFile, showOriginalBackground]);
 
     // Background shown beneath the dots, or null for plain white
-    const getBackgroundSource = (): HTMLCanvasElement | HTMLVideoElement | HTMLImageElement | null => {
+    const getBackgroundSource = () => {
         const params = drawParamsRef.current;
-        if (params.customBgElement) {
-            if (params.customBgElement instanceof HTMLVideoElement) {
-                return params.customBgElement.readyState >= 2 ? params.customBgElement : null;
-            }
-            return params.customBgElement;
-        }
-        if (!params.showOriginalBackground) return null;
-        if (params.applyGradingToOriginal && params.pixelData) {
-            // Processed pixelData as background (color grading applied), cached per frame
-            if (gradedBgRef.current?.source !== params.pixelData) {
-                const canvas = gradedBgRef.current?.canvas ?? document.createElement('canvas');
-                canvas.width = params.pixelData.width;
-                canvas.height = params.pixelData.height;
-                canvas.getContext('2d')!.putImageData(
-                    new ImageData(params.pixelData.pixels, params.pixelData.width, params.pixelData.height),
-                    0,
-                    0
-                );
-                gradedBgRef.current = { source: params.pixelData, canvas };
-            }
-            return gradedBgRef.current.canvas;
-        }
-        if (params.videoElement && params.videoElement.readyState >= 2) return params.videoElement;
-        return backgroundImageRef.current;
+        return pickBackgroundRef.current({
+            customBg: params.customBgElement,
+            showOriginalBackground: params.showOriginalBackground,
+            applyGradingToOriginal: params.applyGradingToOriginal,
+            pixelData: params.pixelData,
+            original: params.videoElement ?? backgroundImageRef.current,
+        });
     };
 
     const getLayout = (): DotLayout | null => {
@@ -263,7 +250,7 @@ export const DotsCanvas: React.FC<DotsCanvasProps> = ({
 
     // Continuous redraw loop for custom video backgrounds
     React.useEffect(() => {
-        if (!customBgElement || !(customBgElement instanceof HTMLVideoElement)) return;
+        if (paused || !customBgElement || !(customBgElement instanceof HTMLVideoElement)) return;
         let rafId: number;
         const loop = () => {
             requestRender();
@@ -272,7 +259,7 @@ export const DotsCanvas: React.FC<DotsCanvasProps> = ({
         rafId = requestAnimationFrame(loop);
         return () => cancelAnimationFrame(rafId);
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [customBgElement, renderer]);
+    }, [customBgElement, renderer, paused]);
 
     const setup = (p5: P5Instance, canvasParentRef: Element) => {
         p5Ref.current = p5;

@@ -4,7 +4,9 @@ import React from 'react';
 import { debounce } from 'lodash';
 import { DotsMenu, DotShape } from './components/DotsMenu';
 import { DotsCanvas, DotsRenderer } from './components/DotsCanvas';
-import { processImageForDots, ProcessedPixelData, resizeImage } from './dots-utils';
+import { ExportPanel } from './components/ExportPanel';
+import { ExportInput } from './export';
+import { grabVideoFrame, processImageForDots, ProcessedPixelData, resizeImage } from './dots-utils';
 import { SpecsState } from '../../shared/types';
 import { PRESETS, DotsPreset } from './presets';
 
@@ -66,7 +68,7 @@ const DotsPage: React.FC = () => {
 
     // File state
     const [currentFile, setCurrentFile] = React.useState<File | null>(null);
-    const [, setVideoFile] = React.useState<File | null>(null);
+    const [videoFile, setVideoFile] = React.useState<File | null>(null);
     const [videoElement, setVideoElement] = React.useState<HTMLVideoElement | null>(null);
     const videoElementRef = React.useRef<HTMLVideoElement | null>(null);
     React.useEffect(() => { videoElementRef.current = videoElement; }, [videoElement]);
@@ -113,6 +115,9 @@ const DotsPage: React.FC = () => {
 
     // Rendering backend (opt-in GPU)
     const [renderer, setRenderer] = React.useState<DotsRenderer>('p5');
+
+    // Live preview pauses while exporting so export gets the full machine
+    const [isExporting, setIsExporting] = React.useState(false);
 
     // Custom background (replaces "show original")
     const [customBgElement, setCustomBgElement] = React.useState<HTMLVideoElement | HTMLImageElement | null>(null);
@@ -315,7 +320,7 @@ const DotsPage: React.FC = () => {
     const canvasRef = React.useRef<HTMLCanvasElement | null>(null);
 
     React.useEffect(() => {
-        if (!isStreamingVideo || !videoElement) return;
+        if (!isStreamingVideo || !videoElement || isExporting) return;
 
         // Create hidden canvas for frame extraction
         if (!canvasRef.current) {
@@ -333,18 +338,8 @@ const DotsPage: React.FC = () => {
             const targetFrameTime = 1000 / frameRate;
 
             if (now - lastFrameTimeRef.current >= targetFrameTime) {
-                const aspectRatio = videoElement.videoWidth / videoElement.videoHeight;
-                const width = specs.resolution;
-                // Use true aspect ratio for dots (no 0.6 multiplier - that's for ASCII chars)
-                const height = Math.floor(width / aspectRatio);
-
-                canvas.width = width;
-                canvas.height = height;
-                const context = canvas.getContext('2d', { willReadFrequently: true });
-                
-                if (context) {
-                    context.drawImage(videoElement, 0, 0, width, height);
-                    const imageData = context.getImageData(0, 0, width, height);
+                const imageData = grabVideoFrame(videoElement, specs.resolution, canvas);
+                if (imageData) {
                     const processed = processImageForDots(imageData, contrast, brightness, gamma, isColorInverted, useColors);
                     setPixelData(processed);
                 }
@@ -362,7 +357,17 @@ const DotsPage: React.FC = () => {
                 cancelAnimationFrame(animationFrameRef.current);
             }
         };
-    }, [isStreamingVideo, videoElement, specs.resolution, contrast, brightness, gamma, isColorInverted, useColors, frameRate]);
+    }, [isStreamingVideo, videoElement, specs.resolution, contrast, brightness, gamma, isColorInverted, useColors, frameRate, isExporting]);
+
+    // Pause live videos during export, resume the ones that were playing
+    React.useEffect(() => {
+        if (!isExporting) return;
+        const videos = [videoElement, customBgElement].filter(
+            (v): v is HTMLVideoElement => v instanceof HTMLVideoElement && !v.paused
+        );
+        videos.forEach((v) => v.pause());
+        return () => videos.forEach((v) => v.play().catch(console.warn));
+    }, [isExporting, videoElement, customBgElement]);
 
     // Cleanup video element on unmount
     React.useEffect(() => {
@@ -431,8 +436,43 @@ const DotsPage: React.FC = () => {
     }, [currentFile, specs.resolution, contrast, brightness, gamma, isColorInverted, useColors, processImage]);
 
 
+    // Snapshot of current settings for export (read when export starts, so it matches the screen)
+    const getExportInput = (): ExportInput | null => {
+        if (!pixelData || !sourceAspectRatio) return null;
+        const displayWidth = 1000 * specs.zoom;
+        const settings = {
+            resolution: specs.resolution,
+            contrast,
+            brightness,
+            gamma,
+            isColorInverted,
+            useColors,
+            layout: { minDotSize, maxDotSize, forceOGColors, removeWhite, whitePoint },
+            shape,
+            showDots,
+            showOriginalBackground,
+            applyGradingToOriginal,
+            frameRate,
+            displayWidth,
+            displayHeight: displayWidth / sourceAspectRatio,
+        };
+        if (currentFile) {
+            return { settings, source: { kind: 'image', file: currentFile, pixelData }, customBg: customBgElement };
+        }
+        if (videoElement && videoFile && !webcamStreamRef.current) {
+            return { settings, source: { kind: 'video', url: videoElement.src }, customBg: customBgElement };
+        }
+        return null;
+    };
+
     return (
         <div className="flex-container">
+            <ExportPanel
+                getExportInput={getExportInput}
+                disabledReason={webcamStreamRef.current ? 'webcam can\'t be exported. upload a video instead' : null}
+                sourceName={currentFile?.name ?? videoFile?.name ?? 'dots'}
+                onExportingChange={setIsExporting}
+            />
             {process.env.REACT_APP_COMMIT && (
                 <div className="build-stamp">{process.env.REACT_APP_COMMIT}</div>
             )}
@@ -509,6 +549,7 @@ const DotsPage: React.FC = () => {
                 sourceFile={currentFile}
                 videoElement={isStreamingVideo ? videoElement : null}
                 renderer={renderer}
+                paused={isExporting}
                 className="dots-canvas"
             />
         </div>

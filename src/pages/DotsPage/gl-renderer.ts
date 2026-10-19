@@ -203,12 +203,15 @@ export class DotsGLRenderer {
         background: GLBackgroundSource | null;
         layout: DotLayout | null;
         shape: ShapeName;
+        /** Exact output size in device pixels (export); defaults to floor(size * dpr) */
+        pixelWidth?: number;
+        pixelHeight?: number;
     }) {
         const { gl } = this;
         const canvas = gl.canvas as HTMLCanvasElement;
         // Truncate like a 2D canvas (and p5) does with fractional sizes
-        const pxWidth = Math.floor(opts.width * opts.dpr);
-        const pxHeight = Math.floor(opts.height * opts.dpr);
+        const pxWidth = opts.pixelWidth ?? Math.floor(opts.width * opts.dpr);
+        const pxHeight = opts.pixelHeight ?? Math.floor(opts.height * opts.dpr);
         if (canvas.width !== pxWidth || canvas.height !== pxHeight) {
             canvas.width = pxWidth;
             canvas.height = pxHeight;
@@ -250,6 +253,18 @@ export class DotsGLRenderer {
             gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, layout.sizes.length);
         }
         gl.bindVertexArray(null);
+    }
+
+    /** Throws if the last render didn't make it (GPU out of memory or context lost) */
+    assertRendered() {
+        const { gl } = this;
+        if (gl.isContextLost() || gl.getError() === gl.OUT_OF_MEMORY) {
+            throw new Error('GPU ran out of memory at this size. Try a smaller size.');
+        }
+        const canvas = gl.canvas as HTMLCanvasElement;
+        if (gl.drawingBufferWidth !== canvas.width || gl.drawingBufferHeight !== canvas.height) {
+            throw new Error('GPU could not allocate this size. Try a smaller size.');
+        }
     }
 
     dispose() {

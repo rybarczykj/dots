@@ -76,3 +76,22 @@ export const processImageForDots = (
 
     return { pixels: result, originalPixels, width, height };
 };
+
+/**
+ * Downscale the current video frame to the dot grid (resolution dots wide) and
+ * return its pixels. Reuses the given canvas between frames.
+ */
+export const grabVideoFrame = (video: HTMLVideoElement, resolution: number, canvas: HTMLCanvasElement): ImageData | null => {
+    const aspectRatio = video.videoWidth / video.videoHeight;
+    const width = resolution;
+    // Use true aspect ratio for dots (no 0.6 multiplier - that's for ASCII chars)
+    const height = Math.floor(width / aspectRatio);
+    if (canvas.width !== width || canvas.height !== height) {
+        canvas.width = width;
+        canvas.height = height;
+    }
+    const context = canvas.getContext('2d', { willReadFrequently: true });
+    if (!context) return null;
+    context.drawImage(video, 0, 0, width, height);
+    return context.getImageData(0, 0, width, height);
+};
