@@ -433,6 +433,9 @@ const DotsPage: React.FC = () => {
 
     return (
         <div className="flex-container">
+            {process.env.REACT_APP_COMMIT && (
+                <div className="build-stamp">{process.env.REACT_APP_COMMIT}</div>
+            )}
             {/* Hidden video element for webcam capture */}
             <video
                 ref={webcamVideoRef}
