@@ -93,29 +93,32 @@ const resize = (image: HTMLImageElement, maxHeight: number, canvas: HTMLCanvasEl
     return canvas;
 };
 
-/**
- * Resize an image file to a maximum width, maintaining aspect ratio
- * Returns a Canvas with the image resized
- */
-export const resizeImage = (settings: IResizeImageOptions): Promise<HTMLCanvasElement> => {
-    const file = settings.file;
-    const maxWidth = settings.maxWidth;
-    const aspectRatioMultiplier = settings.aspectRatioMultiplier ?? 0.6;
-    const reader = new FileReader();
-    const image = new Image();
-    const canvas = document.createElement('canvas');
-
-    return new Promise<HTMLCanvasElement>((ok, no) => {
+/** Decode an image file once; pair with resizeLoadedImage to resize without re-decoding */
+export const loadImageFile = (file: File): Promise<HTMLImageElement> =>
+    new Promise<HTMLImageElement>((ok, no) => {
         if (!file.type.match(/image.*/)) {
             no(new Error('Not an image'));
             return;
         }
-
+        const reader = new FileReader();
+        const image = new Image();
         reader.onload = (readerEvent: ProgressEvent<FileReader>) => {
-            image.onload = () => ok(resize(image, maxWidth, canvas, aspectRatioMultiplier));
+            image.onload = () => ok(image);
+            image.onerror = () => no(new Error('Could not decode image'));
             image.src = readerEvent.target?.result as string;
         };
         reader.readAsDataURL(file);
     });
-};
 
+/** Resize an already-decoded image (see resizeImage for the sizing rules) */
+export const resizeLoadedImage = (image: HTMLImageElement, maxWidth: number, aspectRatioMultiplier = 0.6): HTMLCanvasElement =>
+    resize(image, maxWidth, document.createElement('canvas'), aspectRatioMultiplier);
+
+/**
+ * Resize an image file to a maximum width, maintaining aspect ratio
+ * Returns a Canvas with the image resized
+ */
+export const resizeImage = async (settings: IResizeImageOptions): Promise<HTMLCanvasElement> => {
+    const image = await loadImageFile(settings.file);
+    return resizeLoadedImage(image, settings.maxWidth, settings.aspectRatioMultiplier ?? 0.6);
+};

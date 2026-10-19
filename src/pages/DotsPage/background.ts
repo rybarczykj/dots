@@ -29,7 +29,8 @@ export const createBackgroundPicker = () => {
             // Processed pixelData as background (color grading applied)
             const pixelData = inputs.pixelData;
             if (graded?.source !== pixelData) {
-                const canvas = graded?.canvas ?? document.createElement('canvas');
+                // A fresh canvas per frame, so the GPU renderer knows the contents changed
+                const canvas = document.createElement('canvas');
                 canvas.width = pixelData.width;
                 canvas.height = pixelData.height;
                 canvas

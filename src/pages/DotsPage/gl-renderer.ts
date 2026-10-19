@@ -134,6 +134,8 @@ export class DotsGLRenderer {
     private uniforms: Record<string, WebGLUniformLocation | null>;
     private maxTextureSize: number;
     private fitCanvas: HTMLCanvasElement | null = null;
+    /** Last uploaded background; still images and canvases are re-uploaded only when this changes */
+    private uploadedBackground: GLBackgroundSource | null = null;
 
     constructor(canvas: HTMLCanvasElement) {
         const gl = canvas.getContext('webgl2', {
@@ -228,8 +230,13 @@ export class DotsGLRenderer {
             gl.useProgram(this.bgProgram);
             gl.activeTexture(gl.TEXTURE0);
             gl.bindTexture(gl.TEXTURE_2D, this.bgTexture);
-            gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
-            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, this.fitToTexture(opts.background));
+            // Video frames change every render; anything else only when the source object does
+            // (re-uploading a 12 MP photo per slider tick was the main cost on images)
+            if (opts.background !== this.uploadedBackground || opts.background instanceof HTMLVideoElement) {
+                gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+                gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, this.fitToTexture(opts.background));
+                this.uploadedBackground = opts.background;
+            }
             gl.uniform1i(this.uniforms.uTex, 0);
             // Background spans the untruncated size; the viewport may crop its edge
             gl.uniform2f(this.uniforms.uUvScale, pxWidth / opts.dpr / opts.width, pxHeight / opts.dpr / opts.height);

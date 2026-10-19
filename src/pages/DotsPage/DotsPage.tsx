@@ -1,13 +1,14 @@
 import '../../shared/styles/menu.css';
 import '../../index.css';
 import React from 'react';
-import { debounce } from 'lodash';
+import { throttle } from 'lodash';
 import { DotsMenu, DotShape } from './components/DotsMenu';
 import { DotsCanvas, DotsRenderer } from './components/DotsCanvas';
 import { ExportPanel } from './components/ExportPanel';
 import { ExportInput } from './export';
 import { getDisplaySize } from './dot-layout';
-import { grabVideoFrame, processImageForDots, ProcessedPixelData, resizeImage } from './dots-utils';
+import { grabVideoFrame, processImageForDots, ProcessedPixelData } from './dots-utils';
+import { loadImageFile, resizeLoadedImage } from '../../shared/utils';
 import { SpecsState } from '../../shared/types';
 import { PRESETS, DotsPreset } from './presets';
 
@@ -198,6 +199,11 @@ const DotsPage: React.FC = () => {
         });
     }, [specs.resolution, specs.zoom, contrast, brightness, gamma, isColorInverted, useColors, minDotSize, maxDotSize, shape, forceOGColors, removeWhite, whitePoint, frameRate, showOriginalBackground]);
 
+    // Decoded image and its resized pixels, cached so slider changes don't re-decode the file
+    const decodedImageRef = React.useRef<{ file: File; image: Promise<HTMLImageElement> } | null>(null);
+    const resizedImageRef = React.useRef<{ file: File; resolution: number; imageData: ImageData } | null>(null);
+    const processRequestRef = React.useRef(0);
+
     // Process image with current settings
     const processImage = React.useCallback(async (
         file: File,
@@ -208,16 +214,28 @@ const DotsPage: React.FC = () => {
         inverted: boolean,
         colors: boolean
     ) => {
+        const request = ++processRequestRef.current;
         try {
-            // Use aspectRatioMultiplier of 1.0 for dots (circles are 1:1, unlike ASCII chars)
-            const canvas = await resizeImage({ file, maxWidth: resolution, aspectRatioMultiplier: 1.0 });
-            const context = canvas.getContext('2d', { willReadFrequently: true });
-            if (!context) return;
+            if (decodedImageRef.current?.file !== file) {
+                decodedImageRef.current = { file, image: loadImageFile(file) };
+            }
+            let resized = resizedImageRef.current;
+            if (resized?.file !== file || resized.resolution !== resolution) {
+                const image = await decodedImageRef.current.image;
+                // Use aspectRatioMultiplier of 1.0 for dots (circles are 1:1, unlike ASCII chars)
+                const canvas = resizeLoadedImage(image, resolution, 1.0);
+                const context = canvas.getContext('2d', { willReadFrequently: true });
+                if (!context) return;
+                resized = { file, resolution, imageData: context.getImageData(0, 0, canvas.width, canvas.height) };
+                resizedImageRef.current = resized;
+            }
+            // A newer slider change already started; drop this stale result
+            if (request !== processRequestRef.current) return;
 
-            const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
-            const processed = processImageForDots(imageData, contrastVal, brightnessVal, gammaVal, inverted, colors);
+            const processed = processImageForDots(resized.imageData, contrastVal, brightnessVal, gammaVal, inverted, colors);
             setPixelData(processed);
         } catch (error) {
+            if (decodedImageRef.current?.file === file) decodedImageRef.current = null;
             console.error('Error processing image:', error);
         }
     }, []);
@@ -395,9 +413,9 @@ const DotsPage: React.FC = () => {
         };
     }, [videoElement]);
 
-    // Debounced handlers for expensive operations
-    const debouncedProcessImage = React.useMemo(
-        () => debounce((file: File, resolution: number, contrastVal: number, brightnessVal: number, gammaVal: number, inverted: boolean, colors: boolean) => {
+    // Throttled so the preview updates while a slider is dragged (debounce waited for it to stop)
+    const throttledProcessImage = React.useMemo(
+        () => throttle((file: File, resolution: number, contrastVal: number, brightnessVal: number, gammaVal: number, inverted: boolean, colors: boolean) => {
             processImage(file, resolution, contrastVal, brightnessVal, gammaVal, inverted, colors);
         }, 50),
         [processImage]
@@ -406,30 +424,30 @@ const DotsPage: React.FC = () => {
     const handleResolutionChange = React.useCallback((resolution: number) => {
         setSpecs(prev => ({ ...prev, resolution }));
         if (currentFile) {
-            debouncedProcessImage(currentFile, resolution, contrast, brightness, gamma, isColorInverted, useColors);
+            throttledProcessImage(currentFile, resolution, contrast, brightness, gamma, isColorInverted, useColors);
         }
-    }, [currentFile, contrast, brightness, gamma, isColorInverted, useColors, debouncedProcessImage]);
+    }, [currentFile, contrast, brightness, gamma, isColorInverted, useColors, throttledProcessImage]);
 
     const handleContrastChange = React.useCallback((newContrast: number) => {
         setContrast(newContrast);
         if (currentFile) {
-            debouncedProcessImage(currentFile, specs.resolution, newContrast, brightness, gamma, isColorInverted, useColors);
+            throttledProcessImage(currentFile, specs.resolution, newContrast, brightness, gamma, isColorInverted, useColors);
         }
-    }, [currentFile, specs.resolution, brightness, gamma, isColorInverted, useColors, debouncedProcessImage]);
+    }, [currentFile, specs.resolution, brightness, gamma, isColorInverted, useColors, throttledProcessImage]);
 
     const handleBrightnessChange = React.useCallback((newBrightness: number) => {
         setBrightness(newBrightness);
         if (currentFile) {
-            debouncedProcessImage(currentFile, specs.resolution, contrast, newBrightness, gamma, isColorInverted, useColors);
+            throttledProcessImage(currentFile, specs.resolution, contrast, newBrightness, gamma, isColorInverted, useColors);
         }
-    }, [currentFile, specs.resolution, contrast, gamma, isColorInverted, useColors, debouncedProcessImage]);
+    }, [currentFile, specs.resolution, contrast, gamma, isColorInverted, useColors, throttledProcessImage]);
 
     const handleGammaChange = React.useCallback((newGamma: number) => {
         setGamma(newGamma);
         if (currentFile) {
-            debouncedProcessImage(currentFile, specs.resolution, contrast, brightness, newGamma, isColorInverted, useColors);
+            throttledProcessImage(currentFile, specs.resolution, contrast, brightness, newGamma, isColorInverted, useColors);
         }
-    }, [currentFile, specs.resolution, contrast, brightness, isColorInverted, useColors, debouncedProcessImage]);
+    }, [currentFile, specs.resolution, contrast, brightness, isColorInverted, useColors, throttledProcessImage]);
 
     const handleColorInvertedToggle = React.useCallback(() => {
         const newValue = !isColorInverted;
