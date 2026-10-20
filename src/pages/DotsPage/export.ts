@@ -7,6 +7,8 @@ import { computeDotLayout, DotLayout, DotLayoutParams, getShapeName } from './do
 import { grabVideoFrame, processImageForDots, ProcessedPixelData } from './dots-utils';
 import { BackgroundSource, createBackgroundPicker } from './background';
 import { DotsGLRenderer } from './gl-renderer';
+import { Recording, settingsAt } from './recording';
+import { resizeLoadedImage } from '../../shared/utils';
 
 export interface ExportSettings {
     resolution: number;
@@ -35,6 +37,8 @@ export interface ExportInput {
     settings: ExportSettings;
     source: ExportSource;
     customBg: HTMLVideoElement | HTMLImageElement | null;
+    /** A recorded performance to replay instead of the current settings */
+    recording: Recording | null;
 }
 
 export type SizeId = 'max' | '4k' | '1080p' | 'screen';
@@ -345,6 +349,18 @@ export const exportImage = async (input: ExportInput, size: ExportSize): Promise
     }
 };
 
+/** Pixels of a still image resized to the dot grid, as the live view computes them */
+const resizeStill = (image: HTMLImageElement, resolution: number): ImageData => {
+    // aspectRatioMultiplier 1.0 for dots (circles are 1:1, unlike ASCII chars)
+    const canvas = resizeLoadedImage(image, resolution, 1.0);
+    return canvas.getContext('2d', { willReadFrequently: true })!.getImageData(0, 0, canvas.width, canvas.height);
+};
+
+/**
+ * Render a video file at full quality, or a recorded performance (on a video, or on a still
+ * image, which then becomes a video). With a recording, each frame uses the settings that
+ * were live at that moment.
+ */
 export const exportVideo = async (
     input: ExportInput,
     size: ExportSize,
@@ -352,27 +368,37 @@ export const exportVideo = async (
     signal: AbortSignal,
     onProgress: (done: number, total: number) => void
 ): Promise<Blob> => {
-    if (input.source.kind !== 'video') throw new Error('Not a video source');
-    const { settings } = input;
+    const { source, recording } = input;
+    if (source.kind === 'image' && !recording) throw new Error('Record a performance to export an image as video');
+    const base = input.settings;
+    const settingsAtTime = (time: number): ExportSettings =>
+        recording
+            ? { ...settingsAt(recording, time), displayWidth: base.displayWidth, displayHeight: base.displayHeight }
+            : base;
     const choice = size.encoder ?? (await findEncoderConfig(size.width, size.height, fps));
     if (!choice) throw new Error(`This browser can't encode ${size.width}×${size.height} video. Try a smaller size.`);
 
     let video: HTMLVideoElement | null = null;
+    let still: HTMLImageElement | null = null;
     let bgCopy: HTMLVideoElement | null = null;
     let frames: FrameRenderer | null = null;
     let encoder: VideoEncoder | null = null;
     try {
-        video = await loadVideo(input.source.url);
+        if (source.kind === 'video') {
+            video = await loadVideo(source.url);
+            if (!Number.isFinite(video.duration)) {
+                throw new Error("This video doesn't report its length, so it can't be exported. Re-save it as mp4 and try again.");
+            }
+        } else {
+            still = await loadImage(source.file);
+        }
         // Export a private copy of a video background so the live one keeps playing
         if (input.customBg instanceof HTMLVideoElement) bgCopy = await loadVideo(input.customBg.src);
         const customBg = bgCopy ?? input.customBg;
-        frames = new FrameRenderer(settings, size);
+        frames = new FrameRenderer(base, size);
         const grabCanvas = document.createElement('canvas');
         const pickBackground = createBackgroundPicker();
-
-        if (!Number.isFinite(video.duration)) {
-            throw new Error("This video doesn't report its length, so it can't be exported. Re-save it as mp4 and try again.");
-        }
+        const stillPixels = new Map<number, ImageData>();
 
         const muxer = new Muxer({
             target: new ArrayBufferTarget(),
@@ -388,41 +414,57 @@ export const exportVideo = async (
         });
         encoder.configure(choice.config);
 
-        // The source frame is needed every output frame only when it is the background;
-        // otherwise once per dots update, which saves most seeks at high output fps
-        const sourceIsBackground = settings.showOriginalBackground && !customBg && !settings.applyGradingToOriginal;
-        const total = Math.max(1, Math.round(video.duration * fps));
+        // A recording sets the length (it may stop before the video ends)
+        const duration = recording ? Math.min(recording.duration, video?.duration ?? Infinity) : video!.duration;
+        const total = Math.max(1, Math.round(duration * fps));
         let pixelData: ProcessedPixelData | null = null;
         let layout: DotLayout | null = null;
         let lastSlot = -1;
+        let lastProcessKey = '';
+        let lastLayoutKey = '';
 
         for (let i = 0; i < total; i++) {
             checkAborted(signal);
             if (encodeError) throw encodeError;
             const time = i / fps;
+            const settings = settingsAtTime(time);
+            const processKey = [settings.resolution, settings.contrast, settings.brightness, settings.gamma, settings.isColorInverted, settings.useColors].join('|');
 
-            // Dots update at the chosen framerate, like the live view
-            const slot = Math.floor(time * settings.frameRate);
-            const newSlot = slot !== lastSlot || !pixelData;
-            if (newSlot || sourceIsBackground) await seek(video, time, signal);
+            let newPixels = false;
+            if (video) {
+                // Dots update at the chosen framerate, like the live view, or right away when
+                // the grading changes. The source frame is needed every output frame only when
+                // it is the background, which saves most seeks at high output fps.
+                const slot = Math.floor(time * settings.frameRate);
+                const needFrame = slot !== lastSlot || processKey !== lastProcessKey || !pixelData;
+                const sourceIsBackground = settings.showOriginalBackground && !customBg && !settings.applyGradingToOriginal;
+                if (needFrame || sourceIsBackground) await seek(video, time, signal);
+                if (needFrame) {
+                    const imageData = grabVideoFrame(video, settings.resolution, grabCanvas);
+                    if (imageData) {
+                        pixelData = processImageForDots(imageData, settings.contrast, settings.brightness, settings.gamma, settings.isColorInverted, settings.useColors);
+                        newPixels = true;
+                    }
+                    lastSlot = slot;
+                }
+            } else if (processKey !== lastProcessKey) {
+                let imageData = stillPixels.get(settings.resolution);
+                if (!imageData) {
+                    imageData = resizeStill(still!, settings.resolution);
+                    stillPixels.set(settings.resolution, imageData);
+                }
+                pixelData = processImageForDots(imageData, settings.contrast, settings.brightness, settings.gamma, settings.isColorInverted, settings.useColors);
+                newPixels = true;
+            }
+            lastProcessKey = processKey;
             if (customBg instanceof HTMLVideoElement && customBg.duration > 0) {
                 await seek(customBg, time % customBg.duration, signal);
             }
 
-            if (newSlot) {
-                const imageData = grabVideoFrame(video, settings.resolution, grabCanvas);
-                if (imageData) {
-                    pixelData = processImageForDots(
-                        imageData,
-                        settings.contrast,
-                        settings.brightness,
-                        settings.gamma,
-                        settings.isColorInverted,
-                        settings.useColors
-                    );
-                    layout = layoutFor(settings, pixelData, layout);
-                }
-                lastSlot = slot;
+            const layoutKey = JSON.stringify([settings.layout, settings.showDots]);
+            if (pixelData && (newPixels || layoutKey !== lastLayoutKey)) {
+                layout = layoutFor(settings, pixelData, layout);
+                lastLayoutKey = layoutKey;
             }
 
             const canvas = frames.render(
@@ -431,7 +473,7 @@ export const exportVideo = async (
                     showOriginalBackground: settings.showOriginalBackground,
                     applyGradingToOriginal: settings.applyGradingToOriginal,
                     pixelData,
-                    original: video,
+                    original: video ?? still,
                 }),
                 layout,
                 settings.shape
@@ -454,6 +496,7 @@ export const exportVideo = async (
         if (encoder && encoder.state !== 'closed') encoder.close();
         frames?.dispose();
         if (video) unloadVideo(video);
+        if (still) URL.revokeObjectURL(still.src);
         if (bgCopy) unloadVideo(bgCopy);
     }
 };

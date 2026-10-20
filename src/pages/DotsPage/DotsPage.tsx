@@ -6,6 +6,7 @@ import { DotsMenu, DotShape } from './components/DotsMenu';
 import { DotsCanvas, DotsRenderer } from './components/DotsCanvas';
 import { ExportPanel } from './components/ExportPanel';
 import { ExportInput } from './export';
+import { FrameSettings, Recorder, Recording } from './recording';
 import { getDisplaySize } from './dot-layout';
 import { grabVideoFrame, processImageForDots, ProcessedPixelData } from './dots-utils';
 import { loadImageFile, resizeLoadedImage } from '../../shared/utils';
@@ -469,31 +470,94 @@ const DotsPage: React.FC = () => {
     }, [currentFile, specs.resolution, contrast, brightness, gamma, isColorInverted, useColors, processImage]);
 
 
+    // Everything a frame depends on except display size; shared by export and recording
+    const getFrameSettings = (): FrameSettings => ({
+        resolution: specs.resolution,
+        contrast,
+        brightness,
+        gamma,
+        isColorInverted,
+        useColors,
+        layout: { minDotSize, maxDotSize, forceOGColors, removeWhite, whitePoint },
+        shape,
+        showDots,
+        showOriginalBackground,
+        applyGradingToOriginal,
+        frameRate,
+    });
+
+    // Performance recording: settings changes timestamped against the source's timeline
+    const sourceKey: File | string | null = currentFile ?? (videoFile && videoElement && !webcamStreamRef.current ? videoElement.src : null);
+    const [recording, setRecording] = React.useState<Recording | null>(null);
+    const recorderRef = React.useRef<Recorder | null>(null);
+    const [isRecording, setIsRecording] = React.useState(false);
+    const [recordElapsed, setRecordElapsed] = React.useState(0);
+    const stopRecordingRef = React.useRef<() => void>(() => {});
+
+    const startRecording = () => {
+        if (!sourceKey || recorderRef.current) return;
+        const video = currentFile ? null : videoElementRef.current;
+        let now: () => number;
+        if (video) {
+            // Record one pass from the start; the video stops looping until the recording ends
+            video.loop = false;
+            restartVideo();
+            now = () => video.currentTime;
+            video.addEventListener('ended', () => stopRecordingRef.current(), { once: true });
+        } else {
+            const started = performance.now();
+            now = () => (performance.now() - started) / 1000;
+        }
+        recorderRef.current = new Recorder(sourceKey, now, getFrameSettings());
+        setRecording(null);
+        setIsRecording(true);
+    };
+
+    stopRecordingRef.current = () => {
+        const recorder = recorderRef.current;
+        if (!recorder) return;
+        recorderRef.current = null;
+        setRecording(recorder.finish());
+        setIsRecording(false);
+        const video = videoElementRef.current;
+        if (video && !currentFile) {
+            video.loop = true;
+            if (video.paused) video.play().catch(console.warn);
+        }
+    };
+
+    // Capture every settings change while recording
+    React.useEffect(() => {
+        recorderRef.current?.capture(getFrameSettings());
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [specs.resolution, contrast, brightness, gamma, isColorInverted, useColors, minDotSize, maxDotSize, forceOGColors, removeWhite, whitePoint, shape, showDots, showOriginalBackground, applyGradingToOriginal, frameRate]);
+
+    // Elapsed-time readout while recording
+    React.useEffect(() => {
+        if (!isRecording) return;
+        const started = performance.now();
+        const video = currentFile ? null : videoElementRef.current;
+        const timer = setInterval(() => setRecordElapsed(video ? video.currentTime : (performance.now() - started) / 1000), 100);
+        return () => clearInterval(timer);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [isRecording]);
+
+    // A new source ends any recording in progress; a recording only applies to its own source
+    React.useEffect(() => {
+        if (recorderRef.current) stopRecordingRef.current();
+    }, [sourceKey]);
+    const currentRecording = recording && recording.sourceKey === sourceKey ? recording : null;
+
     // Snapshot of current settings for export (read when export starts, so it matches the screen)
     const getExportInput = (): ExportInput | null => {
         if (!pixelData) return null;
         const display = getDisplaySize(specs.zoom, sourceAspectRatio);
-        const settings = {
-            resolution: specs.resolution,
-            contrast,
-            brightness,
-            gamma,
-            isColorInverted,
-            useColors,
-            layout: { minDotSize, maxDotSize, forceOGColors, removeWhite, whitePoint },
-            shape,
-            showDots,
-            showOriginalBackground,
-            applyGradingToOriginal,
-            frameRate,
-            displayWidth: display.width,
-            displayHeight: display.height,
-        };
+        const settings = { ...getFrameSettings(), displayWidth: display.width, displayHeight: display.height };
         if (currentFile) {
-            return { settings, source: { kind: 'image', file: currentFile, pixelData }, customBg: customBgElement };
+            return { settings, source: { kind: 'image', file: currentFile, pixelData }, customBg: customBgElement, recording: currentRecording };
         }
         if (videoElement && videoFile && !webcamStreamRef.current) {
-            return { settings, source: { kind: 'video', url: videoElement.src }, customBg: customBgElement };
+            return { settings, source: { kind: 'video', url: videoElement.src }, customBg: customBgElement, recording: currentRecording };
         }
         return null;
     };
@@ -505,6 +569,15 @@ const DotsPage: React.FC = () => {
                 disabledReason={webcamStreamRef.current ? 'webcam can\'t be exported. upload a video instead' : null}
                 sourceName={currentFile?.name ?? videoFile?.name ?? 'dots'}
                 onExportingChange={setIsExporting}
+                recording={{
+                    isRecording,
+                    elapsed: recordElapsed,
+                    duration: currentRecording?.duration ?? null,
+                    canRecord: sourceKey !== null && !isExporting,
+                    onStart: startRecording,
+                    onStop: () => stopRecordingRef.current(),
+                    onClear: () => setRecording(null),
+                }}
             />
             {process.env.REACT_APP_COMMIT && (
                 <div className="build-stamp">{process.env.REACT_APP_COMMIT}</div>

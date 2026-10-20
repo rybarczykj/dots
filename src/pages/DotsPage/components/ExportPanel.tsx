@@ -12,6 +12,17 @@ interface ExportPanelProps {
     disabledReason: string | null;
     sourceName: string;
     onExportingChange: (exporting: boolean) => void;
+    recording: {
+        isRecording: boolean;
+        /** Seconds recorded so far, while recording */
+        elapsed: number;
+        /** Length of the finished recording for the current source, if any */
+        duration: number | null;
+        canRecord: boolean;
+        onStart: () => void;
+        onStop: () => void;
+        onClear: () => void;
+    };
 }
 
 type Status =
@@ -20,7 +31,7 @@ type Status =
     | { kind: 'done'; message: string }
     | { kind: 'error'; message: string };
 
-export const ExportPanel: React.FC<ExportPanelProps> = ({ getExportInput, disabledReason, sourceName, onExportingChange }) => {
+export const ExportPanel: React.FC<ExportPanelProps> = ({ getExportInput, disabledReason, sourceName, onExportingChange, recording }) => {
     const [isOpen, setIsOpen] = React.useState(false);
     const [fps, setFps] = React.useState(30);
     const [sizes, setSizes] = React.useState<ExportSize[] | null>(null);
@@ -28,26 +39,35 @@ export const ExportPanel: React.FC<ExportPanelProps> = ({ getExportInput, disabl
     const [status, setStatus] = React.useState<Status>({ kind: 'idle' });
     const abortRef = React.useRef<AbortController | null>(null);
     const sizesKindRef = React.useRef<string | null>(null);
+    const [useRecording, setUseRecording] = React.useState(true);
 
-    const input = isOpen ? getExportInput() : null;
-    const isVideo = input?.source.kind === 'video';
     const running = status.kind === 'running';
+    const hasRecording = recording.duration !== null;
+    // Drop the recording from what gets exported when unchecked
+    const getInput = (): ExportInput | null => {
+        const raw = getExportInput();
+        return raw && { ...raw, recording: useRecording ? raw.recording : null };
+    };
+    const input = isOpen ? getInput() : null;
+    // A recorded performance on a still image exports as video
+    const isVideo = input?.source.kind === 'video' || !!input?.recording;
 
     // Find which sizes this browser can produce whenever the panel opens or settings change.
     // Defaults to "max".
-    const sizeKey = input ? `${input.source.kind}:${input.settings.displayWidth}x${input.settings.displayHeight}:${fps}` : '';
+    const outputKind = isVideo ? 'video' : 'image';
+    const sizeKey = input ? `${outputKind}:${input.settings.displayWidth}x${input.settings.displayHeight}:${fps}` : '';
     React.useEffect(() => {
         if (!isOpen || !sizeKey || running) return;
-        const current = getExportInput();
+        const current = getInput();
         if (!current) return;
         let cancelled = false;
         setSizes(null);
-        getAvailableSizes(current.settings, current.source.kind === 'video', fps).then((available) => {
+        getAvailableSizes(current.settings, outputKind === 'video', fps).then((available) => {
             if (cancelled) return;
             setSizes(available);
             // Keep the user's pick if still offered for the same kind of source, else max
-            const sameKind = sizesKindRef.current === current.source.kind;
-            sizesKindRef.current = current.source.kind;
+            const sameKind = sizesKindRef.current === outputKind;
+            sizesKindRef.current = outputKind;
             setSizeId((prev) => (sameKind && available.some((s) => s.id === prev) ? prev : 'max'));
         });
         return () => {
@@ -62,14 +82,14 @@ export const ExportPanel: React.FC<ExportPanelProps> = ({ getExportInput, disabl
     const codecLabel = selectedSize?.encoder?.label ?? null;
 
     const startExport = async () => {
-        const current = getExportInput();
+        const current = getInput();
         if (!current || !selectedSize) return;
         const baseName = sourceName.replace(/\.[^.]+$/, '') || 'dots';
         const filename = `${baseName}-dots-${selectedSize.width}x${selectedSize.height}`;
         const started = performance.now();
         onExportingChange(true);
         try {
-            if (current.source.kind === 'image') {
+            if (current.source.kind === 'image' && !current.recording) {
                 setStatus({ kind: 'running', done: 0, total: 1 });
                 const blob = await exportImage(current, selectedSize);
                 downloadBlob(blob, `${filename}.png`);
@@ -80,7 +100,7 @@ export const ExportPanel: React.FC<ExportPanelProps> = ({ getExportInput, disabl
                 const blob = await exportVideo(current, selectedSize, fps, controller.signal, (done, total) =>
                     setStatus({ kind: 'running', done, total })
                 );
-                downloadBlob(blob, `${filename}-${fps}fps.mp4`);
+                downloadBlob(blob, `${filename}-${fps}fps${current.recording ? '-performance' : ''}.mp4`);
             }
             const seconds = ((performance.now() - started) / 1000).toFixed(1);
             setStatus({ kind: 'done', message: `saved in ${seconds}s` });
@@ -99,15 +119,50 @@ export const ExportPanel: React.FC<ExportPanelProps> = ({ getExportInput, disabl
 
     return (
         <div className="export-panel">
-            <button className="control-button" onClick={() => setIsOpen((v) => !v)}>
-                export
-            </button>
+            <div className="export-panel-buttons">
+                {recording.isRecording ? (
+                    <button className="control-button record-button recording" onClick={recording.onStop}>
+                        ■ stop {recording.elapsed.toFixed(1)}s
+                    </button>
+                ) : (
+                    <button
+                        className="control-button record-button"
+                        onClick={recording.onStart}
+                        disabled={!recording.canRecord || running}
+                        title="restart the video and record every settings change, to export at full quality"
+                    >
+                        ● rec
+                    </button>
+                )}
+                <button className="control-button" onClick={() => setIsOpen((v) => !v)} disabled={recording.isRecording}>
+                    export
+                </button>
+            </div>
+            {hasRecording && !recording.isRecording && (
+                <div className="record-status">
+                    recorded {recording.duration!.toFixed(1)}s
+                    <button className="record-clear" onClick={recording.onClear} disabled={running} title="discard recording">
+                        ✕
+                    </button>
+                </div>
+            )}
             {isOpen && (
                 <div className="export-panel-body">
                     {disabledReason || !input ? (
                         <div>{disabledReason ?? 'upload an image or video first'}</div>
                     ) : (
                         <>
+                            {hasRecording && (
+                                <label className="export-checkbox">
+                                    <input
+                                        type="checkbox"
+                                        checked={useRecording}
+                                        disabled={running}
+                                        onChange={() => setUseRecording((v) => !v)}
+                                    />
+                                    {`use recording (${recording.duration!.toFixed(1)}s)`}
+                                </label>
+                            )}
                             <div className="control-group">
                                 <label className="control-label" htmlFor="export-size">size</label>
                                 <select

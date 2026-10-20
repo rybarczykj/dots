@@ -289,3 +289,39 @@
 .export-error {
   color: rgb(190, 60, 60);
 }
+
+.export-panel-buttons {
+  display: flex;
+  gap: 5px;
+}
+
+.export-panel-buttons .control-button {
+  flex: 1;
+}
+
+.record-button.recording {
+  color: rgb(190, 60, 60);
+  border-color: rgb(190, 60, 60);
+}
+
+.record-status {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 4px;
+}
+
+.record-clear {
+  border: none;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  font-size: 10px;
+  padding: 0 2px;
+}
+
+.export-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
