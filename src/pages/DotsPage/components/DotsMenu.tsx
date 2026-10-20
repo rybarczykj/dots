@@ -54,6 +54,7 @@ interface DotsMenuProps {
     onShowOriginalBackgroundToggle: () => void;
     showDots: boolean;
     onShowDotsToggle: () => void;
+    onRestartVideo: () => void;
     useGPU: boolean;
     onUseGPUToggle: () => void;
     gpuUnavailable: boolean;
@@ -103,6 +104,7 @@ export const DotsMenu = ({
     onShowOriginalBackgroundToggle,
     showDots,
     onShowDotsToggle,
+    onRestartVideo,
     useGPU,
     onUseGPUToggle,
     gpuUnavailable,
@@ -249,7 +251,9 @@ export const DotsMenu = ({
                                 {pixelData && (
                                     <canvas
                                         ref={previewCanvasRef}
-                                        className="color-preview"
+                                        className={`color-preview ${isVideo ? 'color-preview-clickable' : ''}`}
+                                        onClick={isVideo ? onRestartVideo : undefined}
+                                        title={isVideo ? 'click to restart video' : undefined}
                                     />
                                 )}
                                 <Slider

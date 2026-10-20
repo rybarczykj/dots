@@ -211,6 +211,10 @@
   image-rendering: pixelated;
 }
 
+.color-preview-clickable {
+  cursor: pointer;
+}
+
 /* Collapsible sections */
 .control-section {
   margin-bottom: 25px;

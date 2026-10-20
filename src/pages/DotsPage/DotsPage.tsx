@@ -21,11 +21,7 @@ const DotsPage: React.FC = () => {
         const handleKeyDown = (e: KeyboardEvent) => {
             if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
             if (e.key === 'r' || e.key === 'R') {
-                const video = videoElementRef.current;
-                if (video) {
-                    video.currentTime = 0;
-                    video.play().catch(console.warn);
-                }
+                restartVideo();
             }
             if (e.key === 'w' || e.key === 'W') {
                 toggleWebcam();
@@ -74,6 +70,13 @@ const DotsPage: React.FC = () => {
     const [videoElement, setVideoElement] = React.useState<HTMLVideoElement | null>(null);
     const videoElementRef = React.useRef<HTMLVideoElement | null>(null);
     React.useEffect(() => { videoElementRef.current = videoElement; }, [videoElement]);
+    const restartVideo = React.useCallback(() => {
+        const video = videoElementRef.current;
+        if (video) {
+            video.currentTime = 0;
+            video.play().catch(console.warn);
+        }
+    }, []);
     const [isStreamingVideo, setIsStreamingVideo] = React.useState(false);
 
     // Processed data
@@ -549,6 +552,7 @@ const DotsPage: React.FC = () => {
                 onShowOriginalBackgroundToggle={() => setShowOriginalBackground(v => !v)}
                 showDots={showDots}
                 onShowDotsToggle={() => setShowDots(v => !v)}
+                onRestartVideo={restartVideo}
                 useGPU={renderer === 'gpu'}
                 onUseGPUToggle={() => setRenderer(r => (r === 'gpu' ? 'p5' : 'gpu'))}
                 gpuUnavailable={gpuUnavailable}
