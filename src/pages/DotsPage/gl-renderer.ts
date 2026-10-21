@@ -143,9 +143,10 @@ export class DotsGLRenderer {
     /** Last uploaded background; still images and canvases are re-uploaded only when this changes */
     private uploadedBackground: GLBackgroundSource | null = null;
 
-    constructor(canvas: HTMLCanvasElement) {
+    /** `transparent`: clear to transparent instead of white (PNG export with alpha) */
+    constructor(canvas: HTMLCanvasElement, private transparent = false) {
         const gl = canvas.getContext('webgl2', {
-            alpha: false,
+            alpha: transparent,
             antialias: false,
             premultipliedAlpha: true,
             preserveDrawingBuffer: true,
@@ -237,7 +238,8 @@ export class DotsGLRenderer {
         const originY = tile.y / opts.dpr;
         const viewWidth = tile.width / opts.dpr;
         const viewHeight = tile.height / opts.dpr;
-        gl.clearColor(1, 1, 1, 1);
+        if (this.transparent) gl.clearColor(0, 0, 0, 0);
+        else gl.clearColor(1, 1, 1, 1);
         gl.clear(gl.COLOR_BUFFER_BIT);
 
         if (opts.background) {

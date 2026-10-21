@@ -126,6 +126,8 @@ const createWorkingCanvas = (width: number, height: number): HTMLCanvasElement |
         ctx.fillRect(width - 1, height - 1, 1, 1);
         const px = ctx.getImageData(width - 1, height - 1, 1, 1).data;
         if (px[0] !== 51 || px[1] !== 102 || px[2] !== 153) return null;
+        // Remove the test pixel: transparent tiles drawn over it wouldn't cover it
+        ctx.clearRect(width - 1, height - 1, 1, 1);
         return canvas;
     } catch {
         return null;
@@ -152,10 +154,12 @@ const canProduceFrame = (width: number, height: number): boolean => {
  */
 class FrameRenderer {
     private glCanvas = document.createElement('canvas');
-    private renderer = new DotsGLRenderer(this.glCanvas);
+    private renderer: DotsGLRenderer;
     private composite: HTMLCanvasElement | null = null;
 
-    constructor(private settings: ExportSettings, private size: ExportSize) {}
+    constructor(private settings: ExportSettings, private size: ExportSize, transparent = false) {
+        this.renderer = new DotsGLRenderer(this.glCanvas, transparent);
+    }
 
     /** Render one frame and return the canvas holding it */
     render(background: BackgroundSource | null, layout: DotLayout | null, shape: DotShape): HTMLCanvasElement {
@@ -321,14 +325,15 @@ const layoutFor = (settings: ExportSettings, pixelData: ProcessedPixelData, reus
         ? computeDotLayout(pixelData, { ...settings.layout, dotSpacing: settings.displayWidth / pixelData.width }, reuse)
         : null;
 
-export const exportImage = async (input: ExportInput, size: ExportSize): Promise<Blob> => {
+/** `transparent`: leave the canvas behind the dots empty (PNG with alpha) instead of white */
+export const exportImage = async (input: ExportInput, size: ExportSize, transparent = false): Promise<Blob> => {
     if (input.source.kind !== 'image') throw new Error('Not an image source');
     const { settings } = input;
     const { pixelData } = input.source;
     const original = await loadImage(input.source.file);
     let frames: FrameRenderer | null = null;
     try {
-        frames = new FrameRenderer(settings, size);
+        frames = new FrameRenderer(settings, size, transparent);
         const canvas = frames.render(
             createBackgroundPicker()({
                 customBg: input.customBg,

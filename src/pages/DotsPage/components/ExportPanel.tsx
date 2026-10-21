@@ -40,6 +40,7 @@ export const ExportPanel: React.FC<ExportPanelProps> = ({ getExportInput, disabl
     const abortRef = React.useRef<AbortController | null>(null);
     const sizesKindRef = React.useRef<string | null>(null);
     const [useRecording, setUseRecording] = React.useState(true);
+    const [transparent, setTransparent] = React.useState(false);
 
     const running = status.kind === 'running';
     const hasRecording = recording.duration !== null;
@@ -51,6 +52,8 @@ export const ExportPanel: React.FC<ExportPanelProps> = ({ getExportInput, disabl
     const input = isOpen ? getInput() : null;
     // A recorded performance on a still image exports as video
     const isVideo = input?.source.kind === 'video' || !!input?.recording;
+    // A background image or video fills the frame, so nothing would end up transparent
+    const hasBackground = !!input && (!!input.customBg || input.settings.showOriginalBackground);
 
     // Find which sizes this browser can produce whenever the panel opens or settings change.
     // Defaults to "max".
@@ -91,8 +94,8 @@ export const ExportPanel: React.FC<ExportPanelProps> = ({ getExportInput, disabl
         try {
             if (current.source.kind === 'image' && !current.recording) {
                 setStatus({ kind: 'running', done: 0, total: 1 });
-                const blob = await exportImage(current, selectedSize);
-                downloadBlob(blob, `${filename}.png`);
+                const blob = await exportImage(current, selectedSize, transparent);
+                downloadBlob(blob, `${filename}${transparent ? '-transparent' : ''}.png`);
             } else {
                 const controller = new AbortController();
                 abortRef.current = controller;
@@ -195,6 +198,20 @@ export const ExportPanel: React.FC<ExportPanelProps> = ({ getExportInput, disabl
                                         ))}
                                     </select>
                                 </div>
+                            )}
+                            {!isVideo && (
+                                <label className="export-checkbox">
+                                    <input
+                                        type="checkbox"
+                                        checked={transparent}
+                                        disabled={running}
+                                        onChange={() => setTransparent((v) => !v)}
+                                    />
+                                    {'transparent background'}
+                                </label>
+                            )}
+                            {!isVideo && transparent && hasBackground && (
+                                <div>the background image fills the frame; turn it off for transparency</div>
                             )}
                             {sizes?.length === 0 && <div>this browser can't export {isVideo ? 'video' : 'images'}</div>}
                             {running ? (
